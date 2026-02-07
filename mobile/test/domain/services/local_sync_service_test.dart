@@ -10,10 +10,12 @@ import 'package:immich_mobile/entities/store.entity.dart';
 import 'package:immich_mobile/infrastructure/repositories/db.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/local_album.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/local_asset.repository.dart';
+import 'package:immich_mobile/infrastructure/repositories/remote_asset.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/storage.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/store.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/trashed_local_asset.repository.dart';
 import 'package:immich_mobile/platform/native_sync_api.g.dart';
+import 'package:immich_mobile/repositories/asset_api.repository.dart';
 import 'package:immich_mobile/repositories/local_files_manager.repository.dart';
 import 'package:mocktail/mocktail.dart';
 
@@ -28,6 +30,8 @@ void main() {
   late DriftLocalAlbumRepository mockLocalAlbumRepository;
   late DriftLocalAssetRepository mockLocalAssetRepository;
   late DriftTrashedLocalAssetRepository mockTrashedLocalAssetRepository;
+  late AssetApiRepository mockAssetApiRepository;
+  late RemoteAssetRepository mockRemoteAssetRepository;
   late LocalFilesManagerRepository mockLocalFilesManager;
   late StorageRepository mockStorageRepository;
   late MockNativeSyncApi mockNativeSyncApi;
@@ -51,6 +55,8 @@ void main() {
     mockLocalAlbumRepository = MockLocalAlbumRepository();
     mockLocalAssetRepository = MockLocalAssetRepository();
     mockTrashedLocalAssetRepository = MockTrashedLocalAssetRepository();
+    mockAssetApiRepository = MockAssetApiRepository();
+    mockRemoteAssetRepository = MockRemoteAssetRepository();
     mockLocalFilesManager = MockLocalFilesManagerRepository();
     mockStorageRepository = MockStorageRepository();
     mockNativeSyncApi = MockNativeSyncApi();
@@ -71,6 +77,8 @@ void main() {
       localAlbumRepository: mockLocalAlbumRepository,
       localAssetRepository: mockLocalAssetRepository,
       trashedLocalAssetRepository: mockTrashedLocalAssetRepository,
+      assetApiRepository: mockAssetApiRepository,
+      remoteAssetRepository: mockRemoteAssetRepository,
       localFilesManager: mockLocalFilesManager,
       storageRepository: mockStorageRepository,
       nativeSyncApi: mockNativeSyncApi,
@@ -200,6 +208,56 @@ void main() {
 
       verifyNever(() => mockLocalFilesManager.moveToTrash(any()));
       verifyNever(() => mockTrashedLocalAssetRepository.trashLocalAsset(any()));
+    });
+  });
+
+  group('LocalSyncService - syncLocalDeletionsToServer behavior', () {
+    test('should find locally deleted assets', () async {
+      final localAssetIds = ['asset-1', 'asset-2'];
+      final asset1 = LocalAssetStub.image1.copyWith(id: 'asset-1');
+      final asset2 = LocalAssetStub.image1.copyWith(id: 'asset-2');
+      final expectedLocallyDeletesAssets = [asset2];
+
+      when(() => mockLocalAssetRepository.getAllAssetIds()).thenAnswer((_) async => localAssetIds);
+
+      when(() => mockStorageRepository.isAssetAvailableLocally('asset-1')).thenAnswer((_) async => true);
+      when(() => mockStorageRepository.isAssetAvailableLocally('asset-2')).thenAnswer((_) async => false);
+
+      when(() => mockLocalAssetRepository.get('asset-1')).thenAnswer((_) async => asset1);
+      when(() => mockLocalAssetRepository.get('asset-2')).thenAnswer((_) async => asset2);
+
+      final locallyDeletesAssets = await sut.findLocallyDeletedAssets();
+      expect(locallyDeletesAssets, expectedLocallyDeletesAssets);
+    });
+
+    test('should not do anything if the list of deleted assets is empty.', () async {
+      final List<LocalAsset> deletedAssets = [];
+
+      await sut.processLocallyDeletedAssets(deletedAssets);
+
+      verifyNever(() => mockAssetApiRepository.delete(any(), any()));
+      verifyNever(() => mockRemoteAssetRepository.trash(any()));
+      verifyNever(() => mockLocalAssetRepository.delete(any()));
+    });
+
+    test('should call the repositories with the correct ids', () async {
+      final deletedAssets = [
+        LocalAssetStub.image1.copyWith(id: 'local-1', remoteId: "remote-1"),
+        LocalAssetStub.image1.copyWith(id: 'local-2'),
+      ];
+
+      final expectedRemoteIds = ['remote-1'];
+      final expectedLocalIds = ['local-1', 'local-2'];
+
+      when(() => mockAssetApiRepository.delete(any(), any())).thenAnswer((_) async => {});
+      when(() => mockRemoteAssetRepository.trash(any())).thenAnswer((_) async => {});
+      when(() => mockLocalAssetRepository.delete(any())).thenAnswer((_) async => {});
+
+      await sut.processLocallyDeletedAssets(deletedAssets);
+
+      verify(() => mockAssetApiRepository.delete(expectedRemoteIds, false));
+      verify(() => mockRemoteAssetRepository.trash(expectedRemoteIds));
+      verify(() => mockLocalAssetRepository.delete(expectedLocalIds));
     });
   });
 

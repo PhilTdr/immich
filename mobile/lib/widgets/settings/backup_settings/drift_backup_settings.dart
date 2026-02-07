@@ -48,6 +48,15 @@ class DriftBackupSettings extends ConsumerWidget {
           icon: Icons.sync,
         ),
         const _AlbumSyncActionButton(),
+        const Divider(),
+        Padding(
+          padding: const EdgeInsets.only(left: 16.0),
+          child: Text(
+            "sync_deletions".t(context: context).toUpperCase(),
+            style: context.textTheme.labelSmall?.copyWith(color: context.colorScheme.onSurface.withValues(alpha: 0.7)),
+          ),
+        ),
+        const _SyncLocalDeletionsButton(),
       ],
     );
   }
@@ -244,6 +253,19 @@ class _UseWifiForUploadPhotosButton extends ConsumerWidget {
       appSettingsEnum: AppSettingsEnum.useCellularForUploadPhotos,
       titleKey: "photos",
       subtitleKey: "network_requirement_photos_upload",
+    );
+  }
+}
+
+class _SyncLocalDeletionsButton extends ConsumerWidget {
+  const _SyncLocalDeletionsButton();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return const _SettingsSwitchTile(
+      appSettingsEnum: AppSettingsEnum.syncLocalDeletionsToServer,
+      titleKey: "sync_local_deletions_to_server_option_title",
+      subtitleKey: "sync_local_deletions_to_server_option_description",
     );
   }
 }

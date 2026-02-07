@@ -23,6 +23,7 @@ enum AppSettingsEnum<T> {
     "backgroundBackupSingleProgress",
     false,
   ),
+  syncLocalDeletionsToServer<bool>(StoreKey.syncLocalDeletionsToServer, "syncLocalDeletionsToServer", false),
   storageIndicator<bool>(StoreKey.storageIndicator, "storageIndicator", true),
   thumbnailCacheSize<int>(StoreKey.thumbnailCacheSize, "thumbnailCacheSize", 10000),
   imageCacheSize<int>(StoreKey.imageCacheSize, "imageCacheSize", 350),

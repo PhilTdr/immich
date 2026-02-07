@@ -82,6 +82,11 @@ class DriftLocalAssetRepository extends DriftDatabaseRepository {
     return query.map((row) => row.toDto()).getSingleOrNull();
   }
 
+  Future<List<String>> getAllAssetIds() {
+    final query = _db.localAssetEntity.selectOnly()..addColumns([_db.localAssetEntity.id]);
+    return query.map((row) => row.read(_db.localAssetEntity.id)!).get();
+  }
+
   Future<int> getCount() {
     return _db.managers.localAssetEntity.count();
   }

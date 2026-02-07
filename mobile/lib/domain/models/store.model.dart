@@ -73,6 +73,8 @@ enum StoreKey<T> {
   autoPlayVideo<bool>._(139),
   albumGridView<bool>._(140),
 
+  syncLocalDeletionsToServer<bool>._(141),
+
   // Experimental stuff
   photoManagerCustomFilter<bool>._(1000),
   betaPromptShown<bool>._(1001),

@@ -973,4 +973,31 @@ void main() {
       expect(updated?.checksum, isNull);
     });
   });
+
+  group('read assets', () {
+    test('should find all asset ids', () async {
+      final createdAt = DateTime(2026, 1, 1);
+      final expectedAssetIds = ['asset-1', 'asset-2'];
+
+      await insertLocalAsset(
+        id: 'asset-1',
+        checksum: 'checksum-included',
+        createdAt: createdAt,
+        type: AssetType.image,
+        isFavorite: false,
+      );
+
+      await insertLocalAsset(
+        id: 'asset-2',
+        checksum: 'checksum-included',
+        createdAt: createdAt,
+        type: AssetType.image,
+        isFavorite: false,
+      );
+
+      final assetIds = await repository.getAllAssetIds();
+
+      expect(assetIds, expectedAssetIds);
+    });
+  });
 }

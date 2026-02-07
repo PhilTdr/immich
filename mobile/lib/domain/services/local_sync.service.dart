@@ -9,9 +9,11 @@ import 'package:immich_mobile/entities/store.entity.dart';
 import 'package:immich_mobile/extensions/platform_extensions.dart';
 import 'package:immich_mobile/infrastructure/repositories/local_album.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/local_asset.repository.dart';
+import 'package:immich_mobile/infrastructure/repositories/remote_asset.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/storage.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/trashed_local_asset.repository.dart';
 import 'package:immich_mobile/platform/native_sync_api.g.dart';
+import 'package:immich_mobile/repositories/asset_api.repository.dart';
 import 'package:immich_mobile/repositories/local_files_manager.repository.dart';
 import 'package:immich_mobile/utils/datetime_helpers.dart';
 import 'package:immich_mobile/utils/diff.dart';
@@ -20,6 +22,8 @@ import 'package:logging/logging.dart';
 class LocalSyncService {
   final DriftLocalAlbumRepository _localAlbumRepository;
   final DriftLocalAssetRepository _localAssetRepository;
+  final AssetApiRepository _assetApiRepository;
+  final RemoteAssetRepository _remoteAssetRepository;
   final NativeSyncApi _nativeSyncApi;
   final DriftTrashedLocalAssetRepository _trashedLocalAssetRepository;
   final LocalFilesManagerRepository _localFilesManager;
@@ -30,12 +34,16 @@ class LocalSyncService {
     required DriftLocalAlbumRepository localAlbumRepository,
     required DriftLocalAssetRepository localAssetRepository,
     required DriftTrashedLocalAssetRepository trashedLocalAssetRepository,
+    required AssetApiRepository assetApiRepository,
+    required RemoteAssetRepository remoteAssetRepository,
     required LocalFilesManagerRepository localFilesManager,
     required StorageRepository storageRepository,
     required NativeSyncApi nativeSyncApi,
   }) : _localAlbumRepository = localAlbumRepository,
        _localAssetRepository = localAssetRepository,
        _trashedLocalAssetRepository = trashedLocalAssetRepository,
+       _assetApiRepository = assetApiRepository,
+       _remoteAssetRepository = remoteAssetRepository,
        _localFilesManager = localFilesManager,
        _storageRepository = storageRepository,
        _nativeSyncApi = nativeSyncApi;
@@ -50,6 +58,10 @@ class LocalSyncService {
         } else {
           _log.warning("syncTrashedAssets cannot proceed because MANAGE_MEDIA permission is missing");
         }
+      }
+
+      if (Store.get(StoreKey.syncLocalDeletionsToServer, false)) {
+        await _syncLocallyDeletedAssetsToServer();
       }
 
       if (CurrentPlatform.isIOS) {
@@ -351,6 +363,49 @@ class LocalSyncService {
 
   bool _albumsEqual(LocalAlbum a, LocalAlbum b) {
     return a.name == b.name && a.assetCount == b.assetCount && a.updatedAt.isAtSameMomentAs(b.updatedAt);
+  }
+
+  Future<void> _syncLocallyDeletedAssetsToServer() async {
+    final List<LocalAsset> deletedAssets = await findLocallyDeletedAssets();
+    await processLocallyDeletedAssets(deletedAssets);
+  }
+
+  @visibleForTesting
+  Future<List<LocalAsset>> findLocallyDeletedAssets() async {
+    final dbAssetIds = await _localAssetRepository.getAllAssetIds();
+    final List<LocalAsset> deletedAssets = [];
+
+    for (final assetId in dbAssetIds) {
+      if (!await _storageRepository.isAssetAvailableLocally(assetId)) {
+        _log.info("Asset $assetId is no longer available locally.");
+        final localAsset = await _localAssetRepository.get(assetId);
+        if (localAsset != null) {
+          deletedAssets.add(localAsset);
+        }
+      }
+    }
+
+    return deletedAssets;
+  }
+
+  @visibleForTesting
+  Future<void> processLocallyDeletedAssets(List<LocalAsset> deletedAssets) async {
+    if (deletedAssets.isEmpty) {
+      _log.info("No locally deleted assets found");
+      return;
+    }
+
+    _log.fine("Moving ${deletedAssets.length} locally deleted assets to trash: ${deletedAssets.map((a) => a.id)}");
+
+    final localIds = deletedAssets.map((a) => a.localId).nonNulls.toList();
+    final remoteIds = deletedAssets.map((a) => a.remoteId).nonNulls.toList();
+
+    // trash remote asset
+    await _assetApiRepository.delete(remoteIds, false);
+    await _remoteAssetRepository.trash(remoteIds);
+
+    // delete local reference from database
+    await _localAssetRepository.delete(localIds);
   }
 
   Future<void> _syncTrashedAssets() async {
