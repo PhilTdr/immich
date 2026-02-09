@@ -60,10 +60,6 @@ class LocalSyncService {
         }
       }
 
-      if (Store.get(StoreKey.syncLocalDeletionsToServer, false)) {
-        await _syncLocallyDeletedAssetsToServer();
-      }
-
       if (CurrentPlatform.isIOS) {
         final assets = await _localAssetRepository.getEmptyCloudIdAssets();
         await _mapIosCloudIds(assets);
@@ -86,11 +82,16 @@ class LocalSyncService {
       final deviceAlbums = await _nativeSyncApi.getAlbums();
       await _localAlbumRepository.updateAll(deviceAlbums.toLocalAlbums());
       final newAssets = delta.updates.toLocalAssets();
+      final deletes = await _localAssetRepository.getByIds(delta.deletes);
       await _localAlbumRepository.processDelta(
         updates: newAssets,
         deletes: delta.deletes,
         assetAlbums: delta.assetAlbums,
       );
+
+      if (Store.get(StoreKey.syncLocalDeletionsToServer, false)) {
+        await syncLocallyDeletedAssetsToServer(deletes);
+      }
 
       final dbAlbums = await _localAlbumRepository.getAll();
       // On Android, we need to sync all albums since it is not possible to
@@ -142,6 +143,10 @@ class LocalSyncService {
         onlyFirst: removeAlbum,
         onlySecond: addAlbum,
       );
+
+      if (Store.get(StoreKey.syncLocalDeletionsToServer, false)) {
+        await _syncLocallyDeletedAssetsToServer();
+      }
 
       await _nativeSyncApi.checkpointSync();
       stopwatch.stop();
@@ -367,7 +372,7 @@ class LocalSyncService {
 
   Future<void> _syncLocallyDeletedAssetsToServer() async {
     final List<LocalAsset> deletedAssets = await findLocallyDeletedAssets();
-    await processLocallyDeletedAssets(deletedAssets);
+    await syncLocallyDeletedAssetsToServer(deletedAssets);
   }
 
   @visibleForTesting
@@ -389,7 +394,7 @@ class LocalSyncService {
   }
 
   @visibleForTesting
-  Future<void> processLocallyDeletedAssets(List<LocalAsset> deletedAssets) async {
+  Future<void> syncLocallyDeletedAssetsToServer(List<LocalAsset> deletedAssets) async {
     if (deletedAssets.isEmpty) {
       _log.info("No locally deleted assets found");
       return;
