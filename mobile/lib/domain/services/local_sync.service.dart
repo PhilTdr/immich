@@ -91,6 +91,7 @@ class LocalSyncService {
 
       if (Store.get(StoreKey.syncLocalDeletionsToServer, false)) {
         await syncLocallyDeletedAssetsToServer(deletes);
+        await _syncLocallyRestoredAssetsToServer();
       }
 
       final dbAlbums = await _localAlbumRepository.getAll();
@@ -146,6 +147,7 @@ class LocalSyncService {
 
       if (Store.get(StoreKey.syncLocalDeletionsToServer, false)) {
         await _syncLocallyDeletedAssetsToServer();
+        await _syncLocallyRestoredAssetsToServer();
       }
 
       await _nativeSyncApi.checkpointSync();
@@ -411,6 +413,22 @@ class LocalSyncService {
 
     // delete local reference from database
     await _localAssetRepository.delete(localIds);
+  }
+
+  Future<void> _syncLocallyRestoredAssetsToServer() async {
+    final List<LocalAsset> restoredAssets = await _localAssetRepository.getLocallyRestored();
+    await syncLocallyRestoredAssetsToServer(restoredAssets);
+  }
+
+  @visibleForTesting
+  Future<void> syncLocallyRestoredAssetsToServer(List<LocalAsset> restoredAssets) async {
+    if (restoredAssets.isEmpty) {
+      _log.info("No locally restored assets found");
+      return;
+    }
+    final remoteIds = restoredAssets.map((a) => a.remoteId).nonNulls.toList();
+
+    await _remoteAssetRepository.restoreTrash(remoteIds);
   }
 
   Future<void> _syncTrashedAssets() async {

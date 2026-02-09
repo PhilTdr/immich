@@ -82,6 +82,12 @@ class DriftLocalAssetRepository extends DriftDatabaseRepository {
     return query.map((row) => row.toDto()).getSingleOrNull();
   }
 
+  Future<List<LocalAsset>> getByIds(List<String> ids) {
+    final query = _db.localAssetEntity.select()..where((lae) => lae.id.isIn(ids));
+
+    return query.map((row) => row.toDto()).get();
+  }
+
   Future<List<String>> getAllAssetIds() {
     final query = _db.localAssetEntity.selectOnly()..addColumns([_db.localAssetEntity.id]);
     return query.map((row) => row.read(_db.localAssetEntity.id)!).get();
@@ -227,5 +233,19 @@ class DriftLocalAssetRepository extends DriftDatabaseRepository {
       updates: {_db.localAssetEntity},
       updateKind: UpdateKind.update,
     );
+  }
+
+  Future<List<LocalAsset>> getLocallyRestored() async {
+    final rows =
+    await (_db.select(_db.localAssetEntity).join([
+      innerJoin(
+        _db.remoteAssetEntity,
+        _db.remoteAssetEntity.checksum.equalsExp(_db.localAssetEntity.checksum),
+      ),
+    ])..where(
+      _db.remoteAssetEntity.deletedAt.isNotNull(),
+    )).get();
+
+    return rows.map((result) => result.readTable(_db.localAssetEntity).toDto());
   }
 }
