@@ -47,6 +47,12 @@ class DriftBackupSettings extends ConsumerWidget {
           icon: Icons.sync,
         ),
         const _AlbumSyncActionButton(),
+        const Divider(),
+        SettingGroupTitle(
+          title: "sync_deletions".t(context: context),
+          icon: Icons.sync,
+        ),
+        const _SyncLocalDeletionsButton(),
       ],
     );
   }
@@ -294,6 +300,20 @@ class _BackupDelaySlider extends ConsumerWidget {
           label: formatBackupDelaySliderValue(currentValue),
         ),
       ],
+    );
+  }
+}
+
+class _SyncLocalDeletionsButton extends StatelessWidget {
+  const _SyncLocalDeletionsButton();
+
+  @override
+  Widget build(BuildContext context) {
+    return _BackupSwitchTile(
+      metadataKey: SettingsKey.backupSyncLocalDeletions,
+      selector: (c) => c.backup.syncLocalDeletions,
+      titleKey: "sync_local_deletions_to_server_option_title",
+      subtitleKey: "sync_local_deletions_to_server_option_description",
     );
   }
 }

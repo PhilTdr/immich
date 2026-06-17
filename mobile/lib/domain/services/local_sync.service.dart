@@ -10,8 +10,12 @@ import 'package:immich_mobile/entities/store.entity.dart';
 import 'package:immich_mobile/extensions/platform_extensions.dart';
 import 'package:immich_mobile/infrastructure/repositories/local_album.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/local_asset.repository.dart';
+import 'package:immich_mobile/infrastructure/repositories/local_deletion.repository.dart';
+import 'package:immich_mobile/infrastructure/repositories/remote_asset.repository.dart';
+import 'package:immich_mobile/infrastructure/repositories/settings.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/trashed_local_asset.repository.dart';
 import 'package:immich_mobile/platform/native_sync_api.g.dart';
+import 'package:immich_mobile/repositories/asset_api.repository.dart';
 import 'package:immich_mobile/repositories/asset_media.repository.dart';
 import 'package:immich_mobile/repositories/permission.repository.dart';
 import 'package:immich_mobile/utils/datetime_helpers.dart';
@@ -22,12 +26,14 @@ const String _kSyncCancelledCode = "SYNC_CANCELLED";
 
 class LocalSyncService {
   final DriftLocalAlbumRepository _localAlbumRepository;
-  // ignore: unused_field
   final DriftLocalAssetRepository _localAssetRepository;
   final NativeSyncApi _nativeSyncApi;
   final DriftTrashedLocalAssetRepository _trashedLocalAssetRepository;
   final AssetMediaRepository _assetMediaRepository;
   final IPermissionRepository _permissionRepository;
+  final AssetApiRepository _assetApiRepository;
+  final RemoteAssetRepository _remoteAssetRepository;
+  final DriftLocalDeletionRepository _localDeletionRepository;
   final Completer<void>? _cancellation;
   final Logger _log = Logger("DeviceSyncService");
 
@@ -38,6 +44,9 @@ class LocalSyncService {
     required this._trashedLocalAssetRepository,
     required this._assetMediaRepository,
     required this._permissionRepository,
+    required this._assetApiRepository,
+    required this._remoteAssetRepository,
+    required this._localDeletionRepository,
     this._cancellation,
   }) {
     _cancellation?.future.then((_) => _nativeSyncApi.cancelSync().onError(_log.warning));
@@ -79,11 +88,27 @@ class LocalSyncService {
       final deviceAlbums = await _nativeSyncApi.getAlbums();
       await _localAlbumRepository.updateAll(deviceAlbums.toLocalAlbums());
       final newAssets = delta.updates.toLocalAssets();
+
+      // Resolve the soon-to-be-deleted local assets (with their own remote id via
+      // checksum) BEFORE processDelta removes their rows. Scoped to the current
+      // user so partner/shared assets are never affected; null user disables it.
+      final ownerId = _syncLocalDeletionsEnabled ? _currentUserId : null;
+      final deletedAssets = ownerId != null
+          ? await _localAssetRepository.getByIds(delta.deletes, ownerId: ownerId)
+          : const <LocalAsset>[];
+
       await _localAlbumRepository.processDelta(
         updates: newAssets,
         deletes: delta.deletes,
         assetAlbums: delta.assetAlbums,
       );
+
+      if (ownerId != null) {
+        await _localDeletionRepository.deleteForeignRows(ownerId);
+        await recordLocallyDeletedFromDelta(deletedAssets, ownerId);
+        await flushPendingDeletions(ownerId);
+        await restoreLocallyPresentTrashed(ownerId);
+      }
 
       final dbAlbums = await _localAlbumRepository.getAll();
       // On Android, we need to sync all albums since it is not possible to
@@ -137,6 +162,14 @@ class LocalSyncService {
     try {
       final Stopwatch stopwatch = Stopwatch()..start();
 
+      // Snapshot the backup links BEFORE reconciliation so locally deleted
+      // assets can be detected by comparing against the surviving rows. Scoped to
+      // the current user; null user disables the feature for this run.
+      final ownerId = _syncLocalDeletionsEnabled ? _currentUserId : null;
+      final backupLinksBefore = ownerId != null
+          ? await _localAssetRepository.getRemoteIdsForLocalAssets(ownerId: ownerId)
+          : const <({String localId, String remoteId, String checksum})>[];
+
       final deviceAlbums = await _nativeSyncApi.getAlbums();
       final dbAlbums = await _localAlbumRepository.getAll(sortBy: {SortLocalAlbumsBy.id});
 
@@ -148,6 +181,15 @@ class LocalSyncService {
         onlyFirst: removeAlbum,
         onlySecond: addAlbum,
       );
+
+      // Only act on a fully completed reconciliation; a cancelled run could
+      // otherwise look like assets were deleted.
+      if (ownerId != null && !_isCancelled) {
+        await _localDeletionRepository.deleteForeignRows(ownerId);
+        await recordLocallyDeletedFromSnapshot(backupLinksBefore, ownerId);
+        await flushPendingDeletions(ownerId);
+        await restoreLocallyPresentTrashed(ownerId);
+      }
 
       await _nativeSyncApi.checkpointSync();
       stopwatch.stop();
@@ -382,6 +424,120 @@ class LocalSyncService {
 
   bool _albumsEqual(LocalAlbum a, LocalAlbum b) {
     return a.name == b.name && a.assetCount == b.assetCount && a.updatedAt.isAtSameMomentAs(b.updatedAt);
+  }
+
+  bool get _syncLocalDeletionsEnabled => SettingsRepository.instance.appConfig.backup.syncLocalDeletions;
+
+  /// Current user id, or null when not authenticated. Local→server deletion sync
+  /// only ever acts on the current user's own assets, never on partner/shared
+  /// ones that merely share a checksum.
+  String? get _currentUserId => Store.tryGet(StoreKey.currentUser)?.id;
+
+  /// Delta path: record (as a pending deletion) the backed-up remotes of assets
+  /// the native delta reported as deleted from the device. The actual server
+  /// move-to-trash is driven separately by [flushPendingDeletions].
+  @visibleForTesting
+  Future<void> recordLocallyDeletedFromDelta(List<LocalAsset> deletedAssets, String ownerId) async {
+    // Only assets that were backed up to the server (have a remote counterpart
+    // resolved via checksum) are relevant.
+    final candidates = deletedAssets.where((a) => a.remoteId != null && a.checksum != null).toList();
+    if (candidates.isEmpty) {
+      return;
+    }
+
+    await _localDeletionRepository.upsert(ownerId, {for (final a in candidates) a.remoteId!: a.checksum!});
+  }
+
+  /// Full-sync path: record (as pending deletions) the assets detected as deleted
+  /// by comparing the pre-reconciliation backup snapshot against the surviving
+  /// local rows.
+  @visibleForTesting
+  Future<void> recordLocallyDeletedFromSnapshot(
+    List<({String localId, String remoteId, String checksum})> backupLinksBefore,
+    String ownerId,
+  ) async {
+    if (backupLinksBefore.isEmpty) {
+      return;
+    }
+
+    final present = await _localAssetRepository.getExistingAssetIds(backupLinksBefore.map((e) => e.localId));
+    final gone = backupLinksBefore.where((e) => !present.contains(e.localId)).toList();
+    if (gone.isEmpty) {
+      return;
+    }
+
+    await _localDeletionRepository.upsert(ownerId, {for (final e in gone) e.remoteId: e.checksum});
+  }
+
+  /// Propagates pending deletions to the server trash (soft delete) and removes
+  /// them from the queue. Driven from durable state, so a deletion recorded
+  /// earlier is retried until it succeeds — a transient API failure can never
+  /// silently drop it. Pending rows whose content is still present locally (a
+  /// duplicate under another row, or the deletion was undone before it synced)
+  /// are cancelled rather than trashed. Server errors are caught so the
+  /// surrounding sync (and its checkpoint) still completes; the rows stay queued
+  /// and are retried.
+  @visibleForTesting
+  Future<void> flushPendingDeletions(String ownerId) async {
+    final pending = await _localDeletionRepository.getPending(ownerId);
+    if (pending.isEmpty) {
+      return;
+    }
+
+    // Cancel intents whose content is still present locally.
+    final present = await _localAssetRepository.getExistingChecksums(pending.map((e) => e.checksum));
+    final cancel = [for (final e in pending) if (present.contains(e.checksum)) e.remoteId];
+    if (cancel.isNotEmpty) {
+      await _localDeletionRepository.deleteByRemoteIds(cancel);
+    }
+
+    final remoteIds = [for (final e in pending) if (!present.contains(e.checksum)) e.remoteId];
+    if (remoteIds.isEmpty) {
+      return;
+    }
+
+    _log.fine("Moving ${remoteIds.length} locally deleted assets to the server trash: $remoteIds");
+    try {
+      // force: false => move to trash (reversible), never permanently delete.
+      await _assetApiRepository.delete(remoteIds, false);
+      await _remoteAssetRepository.trash(remoteIds);
+      // The queue row's job is done once the server has it in trash; the restore
+      // direction is derived from the synced remote trash state, not this table.
+      await _localDeletionRepository.deleteByRemoteIds(remoteIds);
+    } catch (e, s) {
+      _log.warning("Failed to move ${remoteIds.length} deletions to the server trash; will retry next sync", e, s);
+    }
+  }
+
+  /// Restores on the server any of the current user's own assets that are present
+  /// on the device but sit in the server trash. Device-authoritative: a present
+  /// local copy means the asset should not be trashed. Derived purely from synced
+  /// state, so it keeps working after the deletion queue is gone (logout,
+  /// token-expiry, reinstall) and regardless of where the asset was trashed.
+  ///
+  /// Reappearance is detected by checksum, which a reappeared asset only gains
+  /// once it has been re-hashed; restoration is therefore deferred to a later
+  /// sync pass (after hashing) rather than happening the instant the asset
+  /// reappears.
+  ///
+  /// Offline-retry invariant: the local `deletedAt` (via [_remoteAssetRepository])
+  /// is cleared only after the server restore succeeds. On failure the local
+  /// trash state is left intact so the same condition is re-derived and retried
+  /// on the next sync.
+  @visibleForTesting
+  Future<void> restoreLocallyPresentTrashed(String ownerId) async {
+    final restorable = await _remoteAssetRepository.getLocallyPresentTrashedRemoteIds(ownerId);
+    if (restorable.isEmpty) {
+      return;
+    }
+
+    _log.fine("Restoring ${restorable.length} locally present trashed assets on the server: $restorable");
+    try {
+      await _assetApiRepository.restoreTrash(restorable);
+      await _remoteAssetRepository.restoreTrash(restorable);
+    } catch (e, s) {
+      _log.warning("Failed to restore ${restorable.length} assets on the server; will retry next sync", e, s);
+    }
   }
 
   Future<void> _syncTrashedAssets() async {

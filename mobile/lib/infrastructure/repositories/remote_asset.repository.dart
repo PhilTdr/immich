@@ -174,6 +174,28 @@ class RemoteAssetRepository extends DriftDatabaseRepository {
     );
   }
 
+  /// Remote ids of [ownerId]'s own assets that are trashed on the server
+  /// (`deletedAt` is set) but whose content is still present locally (matched by
+  /// checksum). Source for the device-authoritative restore: a present local copy
+  /// means the asset should not be in the trash. Owner-scoped so partner/shared
+  /// assets sharing a checksum are never affected; a checksum can match several
+  /// local rows, so the result is collapsed to distinct remote ids.
+  Future<List<String>> getLocallyPresentTrashedRemoteIds(String ownerId) {
+    final query = _db.remoteAssetEntity.selectOnly()
+      ..addColumns([_db.remoteAssetEntity.id])
+      ..join([
+        innerJoin(
+          _db.localAssetEntity,
+          _db.localAssetEntity.checksum.equalsExp(_db.remoteAssetEntity.checksum),
+          useColumns: false,
+        ),
+      ])
+      ..where(_db.remoteAssetEntity.ownerId.equals(ownerId) & _db.remoteAssetEntity.deletedAt.isNotNull())
+      ..groupBy([_db.remoteAssetEntity.id]);
+
+    return query.map((row) => row.read(_db.remoteAssetEntity.id)!).get();
+  }
+
   Future<void> delete(List<String> ids) {
     return _db.batch((batch) {
       for (final id in ids) {

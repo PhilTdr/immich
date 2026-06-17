@@ -567,4 +567,90 @@ void main() {
       expect(updated?.checksum, isNull);
     });
   });
+
+  group('getByIds', () {
+    late String userId;
+
+    setUp(() async {
+      userId = (await ctx.newUser()).id;
+    });
+
+    test('attaches the remote id of the current user\'s own non-trashed backup', () async {
+      final remote = await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1');
+      final local = await ctx.newLocalAsset(id: 'local-1', checksum: 'checksum-1');
+
+      final result = await sut.getByIds(['local-1'], ownerId: userId);
+
+      expect(result.length, 1);
+      expect(result.single.id, local.id);
+      expect(result.single.remoteId, remote.id);
+    });
+
+    test('does not resolve a partner-owned remote that merely shares the checksum', () async {
+      final partner = await ctx.newUser();
+      // Only the partner owns a remote for this checksum.
+      await ctx.newRemoteAsset(ownerId: partner.id, checksum: 'shared-checksum');
+      await ctx.newLocalAsset(id: 'local-1', checksum: 'shared-checksum');
+
+      final result = await sut.getByIds(['local-1'], ownerId: userId);
+
+      expect(result.single.remoteId, isNull);
+    });
+
+    test('does not resolve an already-trashed remote', () async {
+      await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1', deletedAt: DateTime(2024));
+      await ctx.newLocalAsset(id: 'local-1', checksum: 'checksum-1');
+
+      final result = await sut.getByIds(['local-1'], ownerId: userId);
+
+      expect(result.single.remoteId, isNull);
+    });
+  });
+
+  group('getRemoteIdsForLocalAssets', () {
+    late String userId;
+
+    setUp(() async {
+      userId = (await ctx.newUser()).id;
+    });
+
+    test('returns links for backed-up local assets with a non-trashed remote', () async {
+      final remote = await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1');
+      final local = await ctx.newLocalAsset(checksum: 'checksum-1');
+
+      final links = await sut.getRemoteIdsForLocalAssets(ownerId: userId);
+
+      expect(links, [(localId: local.id, remoteId: remote.id, checksum: 'checksum-1')]);
+    });
+
+    test('ignores assets whose remote is trashed or that have no remote match', () async {
+      await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-trashed', deletedAt: DateTime(2024));
+      await ctx.newLocalAsset(checksum: 'checksum-trashed');
+      await ctx.newLocalAsset(checksum: 'checksum-no-remote');
+
+      final links = await sut.getRemoteIdsForLocalAssets(ownerId: userId);
+
+      expect(links, isEmpty);
+    });
+
+    test('ignores a partner-owned remote that shares the checksum', () async {
+      final partner = await ctx.newUser();
+      await ctx.newRemoteAsset(ownerId: partner.id, checksum: 'shared-checksum');
+      await ctx.newLocalAsset(checksum: 'shared-checksum');
+
+      final links = await sut.getRemoteIdsForLocalAssets(ownerId: userId);
+
+      expect(links, isEmpty);
+    });
+  });
+
+  group('getExistingAssetIds / getExistingChecksums', () {
+    test('returns only the ids and checksums that are still present', () async {
+      await ctx.newLocalAsset(id: 'asset-1', checksum: 'checksum-1');
+      await ctx.newLocalAsset(id: 'asset-2', checksum: 'checksum-2');
+
+      expect(await sut.getExistingAssetIds(['asset-1', 'asset-missing']), {'asset-1'});
+      expect(await sut.getExistingChecksums(['checksum-2', 'checksum-missing']), {'checksum-2'});
+    });
+  });
 }
