@@ -85,9 +85,7 @@ class DriftLocalAssetRepository extends DriftDatabaseRepository {
   /// Resolves [ids] to local assets, attaching the id of their backed-up remote
   /// counterpart (matched by checksum). Only a non-trashed remote owned by
   /// [ownerId] is considered, so partner/shared assets that merely share a
-  /// checksum are never resolved. The owner and `deletedAt IS NULL` predicates
-  /// live in the join condition so each local asset is still returned exactly
-  /// once (with a null remoteId when it is not backed up by the current user).
+  /// checksum are never resolved.
   Future<List<LocalAsset>> getByIds(List<String> ids, {required String ownerId}) {
     final query = _db.localAssetEntity.select().addColumns([_db.remoteAssetEntity.id]).join([
       leftOuterJoin(
@@ -105,11 +103,6 @@ class DriftLocalAssetRepository extends DriftDatabaseRepository {
     }).get();
   }
 
-  /// Snapshot of local assets that are backed up to a non-trashed remote asset
-  /// owned by [ownerId], as `(localId, remoteId, checksum)`. Taken before a full
-  /// sync so that local deletions can be detected by comparing against the
-  /// surviving rows afterwards. Scoped to the current user so partner/shared
-  /// assets sharing a checksum are never treated as this device's backups.
   Future<List<({String localId, String remoteId, String checksum})>> getRemoteIdsForLocalAssets({
     required String ownerId,
   }) {
@@ -135,7 +128,7 @@ class DriftLocalAssetRepository extends DriftDatabaseRepository {
         .get();
   }
 
-  /// Returns the subset of [ids] that still exist in `local_asset_entity`.
+  /// Returns the subset of [ids] that are still present
   Future<Set<String>> getExistingAssetIds(Iterable<String> ids) async {
     final result = <String>{};
     for (final slice in ids.toSet().slices(kDriftMaxChunk)) {
@@ -147,7 +140,7 @@ class DriftLocalAssetRepository extends DriftDatabaseRepository {
     return result;
   }
 
-  /// Returns the subset of [checksums] that are still present in `local_asset_entity`.
+  /// Returns the subset of [checksums] that are still present
   Future<Set<String>> getExistingChecksums(Iterable<String> checksums) async {
     final result = <String>{};
     for (final slice in checksums.toSet().slices(kDriftMaxChunk)) {
