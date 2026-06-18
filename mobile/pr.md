@@ -13,7 +13,7 @@ The user wants photos/videos that are deleted from the system gallery to also be
 Implementation:
 During local synchronization the app uses the native media changes (and the full sync) to detect which already backed-up assets were deleted from the device. Those assets are moved to the trash on the server, so they are only soft deleted and stay restorable. A small local table keeps these pending deletions as a per-account queue, so a move-to-trash that has not yet reached the server (for example while offline) is retried on a later sync and is not lost when logging out and back in.
 
-The opposite case, restoring, is derived from the synchronized state rather than from that table: whenever an asset is present on the device again but its backed-up counterpart still sits in the trash on the server, it is restored. Matching is done per user via the checksum, so partner or shared assets are never affected. Because the device is treated as the source of truth here, this also restores assets after the app data was cleared or the app was reinstalled, and it will bring back an asset that was trashed elsewhere (for example on the web) while a copy still exists on the device. The feature is off by default and can be turned on in the backup settings.
+The opposite case, restoring, is driven by a separate per-account watch list: when an asset (re)appears on the device — detected from the native media changes and, on a full sync, from the not-yet-hashed assets — it is queued and, once it has been hashed, checked against the synchronized state. If its own backed-up counterpart still sits in the trash on the server, it is restored. Matching is done per user via the checksum, so partner or shared assets are never affected. Because restoring is tied to the reappearance event rather than to a standing “present locally + trashed on the server” rule, an asset that was intentionally trashed elsewhere (for example on the web) while a copy still exists on the device is not brought back during normal operation. The one exception is after the app data was cleared or the app was reinstalled: the local database is then empty, so the first full sync treats the whole library as reappeared and restores such assets — here the device is taken as the source of truth. The feature is off by default and can be turned on in the backup settings.
 
 Issue:
 I found this existing issue [#23070](https://github.com/immich-app/immich/discussions/23070) and it is also a step in the direction of [#4341](https://github.com/immich-app/immich/discussions/4341).
@@ -26,9 +26,10 @@ I found this existing issue [#23070](https://github.com/immich-app/immich/discus
   - new tests in local_sync_service_test.dart
   - new tests in local_asset_repository_test.dart
   - new tests in local_deletion_repository_test.dart
+  - new tests in local_restore_repository_test.dart
   - new tests in remote_asset_repository_test.dart
   - new tests in auth_repository_test.dart
-- The new database table is covered by the generated drift migration test
+- The new database tables are covered by the generated drift migration test
 - Testet by using the UI / deleting and restoring real assets on the device
 
 <details><summary><h2>Screenshots (if appropriate)</h2></summary>
