@@ -3051,6 +3051,44 @@
     },
     {
       "id": 34,
+      "references": [],
+      "type": "table",
+      "data": {
+        "name": "local_restore_entity",
+        "was_declared_in_moor": false,
+        "columns": [
+          {
+            "name": "asset_id",
+            "getter_name": "assetId",
+            "moor_type": "string",
+            "nullable": false,
+            "customConstraints": null,
+            "default_dart": null,
+            "default_client_dart": null,
+            "dsl_features": []
+          },
+          {
+            "name": "owner_id",
+            "getter_name": "ownerId",
+            "moor_type": "string",
+            "nullable": false,
+            "customConstraints": null,
+            "default_dart": null,
+            "default_client_dart": null,
+            "dsl_features": []
+          }
+        ],
+        "is_virtual": false,
+        "without_rowid": true,
+        "constraints": [],
+        "strict": true,
+        "explicit_pk": [
+          "asset_id"
+        ]
+      }
+    },
+    {
+      "id": 35,
       "references": [
         19
       ],
@@ -3064,7 +3102,7 @@
       }
     },
     {
-      "id": 35,
+      "id": 36,
       "references": [
         20
       ],
@@ -3078,7 +3116,7 @@
       }
     },
     {
-      "id": 36,
+      "id": 37,
       "references": [
         20
       ],
@@ -3092,7 +3130,7 @@
       }
     },
     {
-      "id": 37,
+      "id": 38,
       "references": [
         21
       ],
@@ -3106,7 +3144,7 @@
       }
     },
     {
-      "id": 38,
+      "id": 39,
       "references": [
         23
       ],
@@ -3120,7 +3158,7 @@
       }
     },
     {
-      "id": 39,
+      "id": 40,
       "references": [
         26
       ],
@@ -3134,7 +3172,7 @@
       }
     },
     {
-      "id": 40,
+      "id": 41,
       "references": [
         27
       ],
@@ -3148,7 +3186,7 @@
       }
     },
     {
-      "id": 41,
+      "id": 42,
       "references": [
         27
       ],
@@ -3162,7 +3200,7 @@
       }
     },
     {
-      "id": 42,
+      "id": 43,
       "references": [
         27
       ],
@@ -3176,7 +3214,7 @@
       }
     },
     {
-      "id": 43,
+      "id": 44,
       "references": [
         29
       ],
@@ -3190,7 +3228,7 @@
       }
     },
     {
-      "id": 44,
+      "id": 45,
       "references": [
         29
       ],
@@ -3204,7 +3242,7 @@
       }
     },
     {
-      "id": 45,
+      "id": 46,
       "references": [
         30
       ],
@@ -3218,7 +3256,7 @@
       }
     },
     {
-      "id": 46,
+      "id": 47,
       "references": [
         32
       ],
@@ -3232,7 +3270,7 @@
       }
     },
     {
-      "id": 47,
+      "id": 48,
       "references": [
         33
       ],
@@ -3550,6 +3588,15 @@
         {
           "dialect": "sqlite",
           "sql": "CREATE TABLE IF NOT EXISTS \"local_deletion_entity\" (\"remote_id\" TEXT NOT NULL, \"checksum\" TEXT NOT NULL, \"owner_id\" TEXT NOT NULL, PRIMARY KEY (\"remote_id\")) WITHOUT ROWID, STRICT;"
+        }
+      ]
+    },
+    {
+      "name": "local_restore_entity",
+      "sql": [
+        {
+          "dialect": "sqlite",
+          "sql": "CREATE TABLE IF NOT EXISTS \"local_restore_entity\" (\"asset_id\" TEXT NOT NULL, \"owner_id\" TEXT NOT NULL, PRIMARY KEY (\"asset_id\")) WITHOUT ROWID, STRICT;"
         }
       ]
     },

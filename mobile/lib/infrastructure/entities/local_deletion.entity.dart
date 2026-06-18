@@ -9,10 +9,9 @@ import 'package:immich_mobile/infrastructure/utils/drift_default.mixin.dart';
 /// *pending* work) or cancelled when the same content reappears locally before
 /// it was flushed.
 ///
-/// The restore direction is NOT driven by this table — it is derived from the
-/// synced remote trash state (a locally present asset whose own remote twin is
-/// trashed), so it keeps working even after this table is empty (e.g. after a
-/// reinstall).
+/// The restore direction is NOT driven by this table — a separate watch list
+/// (`LocalRestoreEntity`) tracks assets that reappear on the device and restores
+/// their trashed remote twin once they are hashed.
 @TableIndex.sql('CREATE INDEX IF NOT EXISTS idx_local_deletion_checksum ON local_deletion_entity (checksum)')
 class LocalDeletionEntity extends Table with DriftDefaultsMixin {
   const LocalDeletionEntity();

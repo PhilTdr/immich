@@ -36,6 +36,7 @@ void main() {
   late MockAssetApiRepository mockAssetApiRepository;
   late MockRemoteAssetRepository mockRemoteAssetRepository;
   late MockLocalDeletionRepository mockLocalDeletionRepository;
+  late MockLocalRestoreRepository mockLocalRestoreRepository;
   late MockNativeSyncApi mockNativeSyncApi;
   late Drift db;
 
@@ -69,6 +70,7 @@ void main() {
     mockAssetApiRepository = MockAssetApiRepository();
     mockRemoteAssetRepository = MockRemoteAssetRepository();
     mockLocalDeletionRepository = MockLocalDeletionRepository();
+    mockLocalRestoreRepository = MockLocalRestoreRepository();
     mockNativeSyncApi = MockNativeSyncApi();
 
     when(() => mockNativeSyncApi.shouldFullSync()).thenAnswer((_) async => false);
@@ -95,17 +97,27 @@ void main() {
       assetApiRepository: mockAssetApiRepository,
       remoteAssetRepository: mockRemoteAssetRepository,
       localDeletionRepository: mockLocalDeletionRepository,
+      localRestoreRepository: mockLocalRestoreRepository,
       nativeSyncApi: mockNativeSyncApi,
     );
 
-    // Default: feature disabled and tracking repository quiescent.
+    // Default: feature disabled and tracking repositories quiescent.
     await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletions, false);
     await Store.put(StoreKey.currentUser, UserStub.admin);
     when(() => mockLocalDeletionRepository.upsert(any(), any())).thenAnswer((_) async {});
     when(() => mockLocalDeletionRepository.getPending(any())).thenAnswer((_) async => []);
     when(() => mockLocalDeletionRepository.deleteByRemoteIds(any())).thenAnswer((_) async {});
     when(() => mockLocalDeletionRepository.deleteForeignRows(any())).thenAnswer((_) async {});
-    when(() => mockRemoteAssetRepository.getLocallyPresentTrashedRemoteIds(any())).thenAnswer((_) async => []);
+    when(() => mockLocalRestoreRepository.enqueue(any(), any())).thenAnswer((_) async {});
+    when(() => mockLocalRestoreRepository.getPending(any())).thenAnswer((_) async => <String>[]);
+    when(() => mockLocalRestoreRepository.deleteByAssetIds(any())).thenAnswer((_) async {});
+    when(() => mockLocalRestoreRepository.deleteForeignRows(any())).thenAnswer((_) async {});
+    when(() => mockLocalAssetRepository.getExistingAssetIds(any())).thenAnswer((_) async => <String>{});
+    when(() => mockLocalAssetRepository.getHashedAssetIds(any())).thenAnswer((_) async => <String>{});
+    when(() => mockLocalAssetRepository.getUnhashedAssetIds()).thenAnswer((_) async => <String>[]);
+    when(
+      () => mockRemoteAssetRepository.getTrashedBackupsForLocalIds(any(), any()),
+    ).thenAnswer((_) async => <({String localId, String remoteId})>[]);
 
     await Store.put(StoreKey.manageLocalMediaAndroid, false);
     when(() => mockPermissionRepository.hasManageMediaPermission()).thenAnswer((_) async => false);
@@ -333,33 +345,77 @@ void main() {
       verifyNever(() => mockLocalDeletionRepository.deleteByRemoteIds(any()));
     });
 
-    test('restores locally present assets that sit in the server trash', () async {
+    test('restores a reappeared candidate whose remote twin is trashed', () async {
+      when(() => mockLocalRestoreRepository.getPending(any())).thenAnswer((_) async => ['local-1']);
+      when(() => mockLocalAssetRepository.getExistingAssetIds(any())).thenAnswer((_) async => {'local-1'});
+      when(() => mockLocalAssetRepository.getHashedAssetIds(any())).thenAnswer((_) async => {'local-1'});
       when(
-        () => mockRemoteAssetRepository.getLocallyPresentTrashedRemoteIds(any()),
-      ).thenAnswer((_) async => ['remote-1']);
+        () => mockRemoteAssetRepository.getTrashedBackupsForLocalIds(any(), any()),
+      ).thenAnswer((_) async => [(localId: 'local-1', remoteId: 'remote-1')]);
       when(() => mockAssetApiRepository.restoreTrash(any())).thenAnswer((_) async {});
       when(() => mockRemoteAssetRepository.restoreTrash(any())).thenAnswer((_) async {});
 
-      await sut.restoreLocallyPresentTrashed('owner-1');
+      await sut.processRestoreQueue('owner-1');
 
-      verify(() => mockRemoteAssetRepository.getLocallyPresentTrashedRemoteIds('owner-1')).called(1);
-      // Offline-retry invariant: the server restore happens before the local
-      // deletedAt is cleared.
+      // Offline-retry invariant: the server restore happens before the watch row
+      // and the local deletedAt are cleared.
       verifyInOrder([
         () => mockAssetApiRepository.restoreTrash(['remote-1']),
         () => mockRemoteAssetRepository.restoreTrash(['remote-1']),
+        () => mockLocalRestoreRepository.deleteByAssetIds({'local-1'}),
       ]);
     });
 
-    test('does nothing when no locally present asset is trashed on the server', () async {
+    test('drops a hashed candidate that matches nothing in the trash', () async {
+      when(() => mockLocalRestoreRepository.getPending(any())).thenAnswer((_) async => ['local-1']);
+      when(() => mockLocalAssetRepository.getExistingAssetIds(any())).thenAnswer((_) async => {'local-1'});
+      when(() => mockLocalAssetRepository.getHashedAssetIds(any())).thenAnswer((_) async => {'local-1'});
       when(
-        () => mockRemoteAssetRepository.getLocallyPresentTrashedRemoteIds(any()),
-      ).thenAnswer((_) async => []);
+        () => mockRemoteAssetRepository.getTrashedBackupsForLocalIds(any(), any()),
+      ).thenAnswer((_) async => <({String localId, String remoteId})>[]);
 
-      await sut.restoreLocallyPresentTrashed('owner-1');
+      await sut.processRestoreQueue('owner-1');
 
+      verify(() => mockLocalRestoreRepository.deleteByAssetIds(['local-1'])).called(1);
       verifyNever(() => mockAssetApiRepository.restoreTrash(any()));
-      verifyNever(() => mockRemoteAssetRepository.restoreTrash(any()));
+    });
+
+    test('keeps a candidate that is not hashed yet', () async {
+      when(() => mockLocalRestoreRepository.getPending(any())).thenAnswer((_) async => ['local-1']);
+      when(() => mockLocalAssetRepository.getExistingAssetIds(any())).thenAnswer((_) async => {'local-1'});
+      when(() => mockLocalAssetRepository.getHashedAssetIds(any())).thenAnswer((_) async => <String>{});
+
+      await sut.processRestoreQueue('owner-1');
+
+      verifyNever(() => mockRemoteAssetRepository.getTrashedBackupsForLocalIds(any(), any()));
+      verifyNever(() => mockLocalRestoreRepository.deleteByAssetIds(['local-1']));
+      verifyNever(() => mockAssetApiRepository.restoreTrash(any()));
+    });
+
+    test('drops a candidate whose local asset disappeared again', () async {
+      when(() => mockLocalRestoreRepository.getPending(any())).thenAnswer((_) async => ['local-1']);
+      when(() => mockLocalAssetRepository.getExistingAssetIds(any())).thenAnswer((_) async => <String>{});
+
+      await sut.processRestoreQueue('owner-1');
+
+      verify(() => mockLocalRestoreRepository.deleteByAssetIds(['local-1'])).called(1);
+      verifyNever(() => mockRemoteAssetRepository.getTrashedBackupsForLocalIds(any(), any()));
+      verifyNever(() => mockAssetApiRepository.restoreTrash(any()));
+    });
+
+    test('leaves the watch row queued when the server restore fails', () async {
+      when(() => mockLocalRestoreRepository.getPending(any())).thenAnswer((_) async => ['local-1']);
+      when(() => mockLocalAssetRepository.getExistingAssetIds(any())).thenAnswer((_) async => {'local-1'});
+      when(() => mockLocalAssetRepository.getHashedAssetIds(any())).thenAnswer((_) async => {'local-1'});
+      when(
+        () => mockRemoteAssetRepository.getTrashedBackupsForLocalIds(any(), any()),
+      ).thenAnswer((_) async => [(localId: 'local-1', remoteId: 'remote-1')]);
+      when(() => mockAssetApiRepository.restoreTrash(any())).thenThrow(Exception('network'));
+
+      await sut.processRestoreQueue('owner-1');
+
+      // The restorable watch row must survive a failed restore so it is retried.
+      verifyNever(() => mockLocalRestoreRepository.deleteByAssetIds({'local-1'}));
     });
 
     test('does nothing in the delta path when the feature is disabled', () async {
@@ -384,7 +440,8 @@ void main() {
       verifyNever(() => mockLocalAssetRepository.getByIds(any(), ownerId: any(named: 'ownerId')));
       verifyNever(() => mockAssetApiRepository.delete(any(), any()));
       verifyNever(() => mockLocalDeletionRepository.deleteForeignRows(any()));
-      verifyNever(() => mockRemoteAssetRepository.getLocallyPresentTrashedRemoteIds(any()));
+      verifyNever(() => mockLocalRestoreRepository.deleteForeignRows(any()));
+      verifyNever(() => mockLocalRestoreRepository.enqueue(any(), any()));
     });
 
     test('delta path resolves deletes before processDelta, then trashes and reconciles when enabled', () async {
@@ -419,9 +476,10 @@ void main() {
       await sut.sync();
 
       // Deletes must be resolved (scoped to the current user) BEFORE processDelta
-      // removes the rows; foreign-account rows are then purged, the deletion is
-      // recorded, flushed to the server trash (and its queue row removed), and
-      // finally the device-authoritative restore sweep runs.
+      // removes the rows; foreign-account rows of both queues are then purged, the
+      // deletion is recorded, flushed to the server trash (and its queue row
+      // removed), the reappeared assets are enqueued for restore, and finally the
+      // restore queue is processed.
       verifyInOrder([
         () => mockLocalAssetRepository.getByIds(['local-1'], ownerId: UserStub.admin.id),
         () => mockLocalAlbumRepository.processDelta(
@@ -430,12 +488,14 @@ void main() {
           assetAlbums: any(named: 'assetAlbums'),
         ),
         () => mockLocalDeletionRepository.deleteForeignRows(UserStub.admin.id),
+        () => mockLocalRestoreRepository.deleteForeignRows(UserStub.admin.id),
         () => mockLocalDeletionRepository.upsert(UserStub.admin.id, {'remote-1': 'checksum-1'}),
         () => mockLocalDeletionRepository.getPending(UserStub.admin.id),
         () => mockAssetApiRepository.delete(['remote-1'], false),
         () => mockRemoteAssetRepository.trash(['remote-1']),
         () => mockLocalDeletionRepository.deleteByRemoteIds(['remote-1']),
-        () => mockRemoteAssetRepository.getLocallyPresentTrashedRemoteIds(UserStub.admin.id),
+        () => mockLocalRestoreRepository.enqueue(UserStub.admin.id, any()),
+        () => mockLocalRestoreRepository.getPending(UserStub.admin.id),
       ]);
     });
 
@@ -481,6 +541,7 @@ void main() {
         assetApiRepository: mockAssetApiRepository,
         remoteAssetRepository: mockRemoteAssetRepository,
         localDeletionRepository: mockLocalDeletionRepository,
+        localRestoreRepository: mockLocalRestoreRepository,
         nativeSyncApi: mockNativeSyncApi,
         cancellation: cancellation,
       );
@@ -499,7 +560,8 @@ void main() {
       // Snapshot is still taken, but no deletion/restore is acted upon.
       verifyNever(() => mockAssetApiRepository.delete(any(), any()));
       verifyNever(() => mockLocalDeletionRepository.deleteForeignRows(any()));
-      verifyNever(() => mockRemoteAssetRepository.getLocallyPresentTrashedRemoteIds(any()));
+      verifyNever(() => mockLocalRestoreRepository.deleteForeignRows(any()));
+      verifyNever(() => mockLocalRestoreRepository.enqueue(any(), any()));
     });
   });
 

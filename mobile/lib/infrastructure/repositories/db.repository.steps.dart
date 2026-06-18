@@ -15959,6 +15959,7 @@ final class Schema31 extends i0.VersionedSchema {
     settings,
     assetOcrEntity,
     localDeletionEntity,
+    localRestoreEntity,
     idxPartnerSharedWithId,
     idxLatLng,
     idxRemoteExifCity,
@@ -16460,6 +16461,17 @@ final class Schema31 extends i0.VersionedSchema {
     ),
     alias: null,
   );
+  late final Shape53 localRestoreEntity = Shape53(
+    source: i0.VersionedTable(
+      entityName: 'local_restore_entity',
+      withoutRowId: true,
+      isStrict: true,
+      tableConstraints: ['PRIMARY KEY(asset_id)'],
+      columns: [_column_227, _column_226],
+      attachedDatabase: database,
+    ),
+    alias: null,
+  );
   final i1.Index idxPartnerSharedWithId = i1.Index(
     'idx_partner_shared_with_id',
     'CREATE INDEX IF NOT EXISTS idx_partner_shared_with_id ON partner_entity (shared_with_id)',
@@ -16539,6 +16551,23 @@ i1.GeneratedColumn<String> _column_225(String aliasedName) =>
 i1.GeneratedColumn<String> _column_226(String aliasedName) =>
     i1.GeneratedColumn<String>(
       'owner_id',
+      aliasedName,
+      false,
+      type: i1.DriftSqlType.string,
+      $customConstraints: 'NOT NULL',
+    );
+
+class Shape53 extends i0.VersionedTable {
+  Shape53({required super.source, required super.alias}) : super.aliased();
+  i1.GeneratedColumn<String> get assetId =>
+      columnsByName['asset_id']! as i1.GeneratedColumn<String>;
+  i1.GeneratedColumn<String> get ownerId =>
+      columnsByName['owner_id']! as i1.GeneratedColumn<String>;
+}
+
+i1.GeneratedColumn<String> _column_227(String aliasedName) =>
+    i1.GeneratedColumn<String>(
+      'asset_id',
       aliasedName,
       false,
       type: i1.DriftSqlType.string,

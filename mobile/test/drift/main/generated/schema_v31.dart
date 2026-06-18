@@ -9888,6 +9888,185 @@ class LocalDeletionEntityCompanion
   }
 }
 
+class LocalRestoreEntity extends Table
+    with TableInfo<LocalRestoreEntity, LocalRestoreEntityData> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  LocalRestoreEntity(this.attachedDatabase, [this._alias]);
+  late final GeneratedColumn<String> assetId = GeneratedColumn<String>(
+    'asset_id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+    $customConstraints: 'NOT NULL',
+  );
+  late final GeneratedColumn<String> ownerId = GeneratedColumn<String>(
+    'owner_id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+    $customConstraints: 'NOT NULL',
+  );
+  @override
+  List<GeneratedColumn> get $columns => [assetId, ownerId];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'local_restore_entity';
+  @override
+  Set<GeneratedColumn> get $primaryKey => {assetId};
+  @override
+  LocalRestoreEntityData map(Map<String, dynamic> data, {String? tablePrefix}) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return LocalRestoreEntityData(
+      assetId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}asset_id'],
+      )!,
+      ownerId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}owner_id'],
+      )!,
+    );
+  }
+
+  @override
+  LocalRestoreEntity createAlias(String alias) {
+    return LocalRestoreEntity(attachedDatabase, alias);
+  }
+
+  @override
+  bool get withoutRowId => true;
+  @override
+  bool get isStrict => true;
+  @override
+  List<String> get customConstraints => const ['PRIMARY KEY(asset_id)'];
+  @override
+  bool get dontWriteConstraints => true;
+}
+
+class LocalRestoreEntityData extends DataClass
+    implements Insertable<LocalRestoreEntityData> {
+  final String assetId;
+  final String ownerId;
+  const LocalRestoreEntityData({required this.assetId, required this.ownerId});
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['asset_id'] = Variable<String>(assetId);
+    map['owner_id'] = Variable<String>(ownerId);
+    return map;
+  }
+
+  factory LocalRestoreEntityData.fromJson(
+    Map<String, dynamic> json, {
+    ValueSerializer? serializer,
+  }) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return LocalRestoreEntityData(
+      assetId: serializer.fromJson<String>(json['assetId']),
+      ownerId: serializer.fromJson<String>(json['ownerId']),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'assetId': serializer.toJson<String>(assetId),
+      'ownerId': serializer.toJson<String>(ownerId),
+    };
+  }
+
+  LocalRestoreEntityData copyWith({String? assetId, String? ownerId}) =>
+      LocalRestoreEntityData(
+        assetId: assetId ?? this.assetId,
+        ownerId: ownerId ?? this.ownerId,
+      );
+  LocalRestoreEntityData copyWithCompanion(LocalRestoreEntityCompanion data) {
+    return LocalRestoreEntityData(
+      assetId: data.assetId.present ? data.assetId.value : this.assetId,
+      ownerId: data.ownerId.present ? data.ownerId.value : this.ownerId,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('LocalRestoreEntityData(')
+          ..write('assetId: $assetId, ')
+          ..write('ownerId: $ownerId')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode => Object.hash(assetId, ownerId);
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is LocalRestoreEntityData &&
+          other.assetId == this.assetId &&
+          other.ownerId == this.ownerId);
+}
+
+class LocalRestoreEntityCompanion
+    extends UpdateCompanion<LocalRestoreEntityData> {
+  final Value<String> assetId;
+  final Value<String> ownerId;
+  const LocalRestoreEntityCompanion({
+    this.assetId = const Value.absent(),
+    this.ownerId = const Value.absent(),
+  });
+  LocalRestoreEntityCompanion.insert({
+    required String assetId,
+    required String ownerId,
+  }) : assetId = Value(assetId),
+       ownerId = Value(ownerId);
+  static Insertable<LocalRestoreEntityData> custom({
+    Expression<String>? assetId,
+    Expression<String>? ownerId,
+  }) {
+    return RawValuesInsertable({
+      if (assetId != null) 'asset_id': assetId,
+      if (ownerId != null) 'owner_id': ownerId,
+    });
+  }
+
+  LocalRestoreEntityCompanion copyWith({
+    Value<String>? assetId,
+    Value<String>? ownerId,
+  }) {
+    return LocalRestoreEntityCompanion(
+      assetId: assetId ?? this.assetId,
+      ownerId: ownerId ?? this.ownerId,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (assetId.present) {
+      map['asset_id'] = Variable<String>(assetId.value);
+    }
+    if (ownerId.present) {
+      map['owner_id'] = Variable<String>(ownerId.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('LocalRestoreEntityCompanion(')
+          ..write('assetId: $assetId, ')
+          ..write('ownerId: $ownerId')
+          ..write(')'))
+        .toString();
+  }
+}
+
 class DatabaseAtV31 extends GeneratedDatabase {
   DatabaseAtV31(QueryExecutor e) : super(e);
   late final UserEntity userEntity = UserEntity(this);
@@ -9961,6 +10140,7 @@ class DatabaseAtV31 extends GeneratedDatabase {
   late final LocalDeletionEntity localDeletionEntity = LocalDeletionEntity(
     this,
   );
+  late final LocalRestoreEntity localRestoreEntity = LocalRestoreEntity(this);
   late final Index idxPartnerSharedWithId = Index(
     'idx_partner_shared_with_id',
     'CREATE INDEX IF NOT EXISTS idx_partner_shared_with_id ON partner_entity (shared_with_id)',
@@ -10056,6 +10236,7 @@ class DatabaseAtV31 extends GeneratedDatabase {
     settings,
     assetOcrEntity,
     localDeletionEntity,
+    localRestoreEntity,
     idxPartnerSharedWithId,
     idxLatLng,
     idxRemoteExifCity,

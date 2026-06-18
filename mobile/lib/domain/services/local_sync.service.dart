@@ -11,6 +11,7 @@ import 'package:immich_mobile/extensions/platform_extensions.dart';
 import 'package:immich_mobile/infrastructure/repositories/local_album.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/local_asset.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/local_deletion.repository.dart';
+import 'package:immich_mobile/infrastructure/repositories/local_restore.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/remote_asset.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/settings.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/trashed_local_asset.repository.dart';
@@ -34,6 +35,7 @@ class LocalSyncService {
   final AssetApiRepository _assetApiRepository;
   final RemoteAssetRepository _remoteAssetRepository;
   final DriftLocalDeletionRepository _localDeletionRepository;
+  final DriftLocalRestoreRepository _localRestoreRepository;
   final Completer<void>? _cancellation;
   final Logger _log = Logger("DeviceSyncService");
 
@@ -47,6 +49,7 @@ class LocalSyncService {
     required this._assetApiRepository,
     required this._remoteAssetRepository,
     required this._localDeletionRepository,
+    required this._localRestoreRepository,
     this._cancellation,
   }) {
     _cancellation?.future.then((_) => _nativeSyncApi.cancelSync().onError(_log.warning));
@@ -104,9 +107,13 @@ class LocalSyncService {
 
       if (ownerId != null) {
         await _localDeletionRepository.deleteForeignRows(ownerId);
+        await _localRestoreRepository.deleteForeignRows(ownerId);
         await recordLocallyDeletedFromDelta(deletedAssets, ownerId);
         await flushPendingDeletions(ownerId);
-        await restoreLocallyPresentTrashed(ownerId);
+        // Watch the assets that (re)appeared in this delta for a possible restore
+        // once they are hashed.
+        await _localRestoreRepository.enqueue(ownerId, newAssets.map((a) => a.id));
+        await processRestoreQueue(ownerId);
       }
 
       final dbAlbums = await _localAlbumRepository.getAll();
@@ -182,9 +189,13 @@ class LocalSyncService {
 
       if (ownerId != null && !_isCancelled) {
         await _localDeletionRepository.deleteForeignRows(ownerId);
+        await _localRestoreRepository.deleteForeignRows(ownerId);
         await recordLocallyDeletedFromSnapshot(remoteIdsBefore, ownerId);
         await flushPendingDeletions(ownerId);
-        await restoreLocallyPresentTrashed(ownerId);
+        // Watch every not-yet-hashed asset (after a reinstall the whole library
+        // is "new") for a possible restore once it is hashed.
+        await _localRestoreRepository.enqueue(ownerId, await _localAssetRepository.getUnhashedAssetIds());
+        await processRestoreQueue(ownerId);
       }
 
       await _nativeSyncApi.checkpointSync();
@@ -487,34 +498,57 @@ class LocalSyncService {
     }
   }
 
-  /// Restores on the server any of the current user's own assets that are present
-  /// on the device but sit in the server trash. Device-authoritative: a present
-  /// local copy means the asset should not be trashed. Derived purely from synced
-  /// state, so it keeps working after the deletion queue is gone (logout,
-  /// token-expiry, reinstall) and regardless of where the asset was trashed.
+  /// Resolves the restore watch queue: a reappeared local asset that is now
+  /// hashed and whose own remote twin sits in the server trash is restored on
+  /// the server. The queue is fed by reappearance events (delta/full sync), so
+  /// the restore is scoped to assets that actually came back on the device — a
+  /// purely server-side deletion is never undone — and it survives a reinstall.
   ///
-  /// Reappearance is detected by checksum, which a reappeared asset only gains
-  /// once it has been re-hashed; restoration is therefore deferred to a later
-  /// sync pass (after hashing) rather than happening the instant the asset
-  /// reappears.
+  /// Candidates whose local asset disappeared again (deleted before it was
+  /// hashed) and hashed candidates that match nothing in the trash are dropped;
+  /// candidates still awaiting a checksum stay queued. A pending deletion can
+  /// never be restored here: its remote is only trashed once [flushPendingDeletions]
+  /// has removed its queue row, and flush (which runs first) cancels a deletion
+  /// whose content reappeared.
   ///
   /// Offline-retry invariant: the local `deletedAt` (via [_remoteAssetRepository])
-  /// is cleared only after the server restore succeeds. On failure the local
-  /// trash state is left intact so the same condition is re-derived and retried
-  /// on the next sync.
+  /// and the watch row are cleared only after the server restore succeeds. On
+  /// failure both are left intact so the restore is retried on the next sync.
   @visibleForTesting
-  Future<void> restoreLocallyPresentTrashed(String ownerId) async {
-    final restorable = await _remoteAssetRepository.getLocallyPresentTrashedRemoteIds(ownerId);
-    if (restorable.isEmpty) {
+  Future<void> processRestoreQueue(String ownerId) async {
+    final watched = await _localRestoreRepository.getPending(ownerId);
+    if (watched.isEmpty) {
       return;
     }
 
-    _log.fine("Restoring ${restorable.length} locally present trashed assets on the server: $restorable");
+    // Drop candidates whose local asset is gone again (deleted before hashing).
+    final existing = await _localAssetRepository.getExistingAssetIds(watched);
+    await _localRestoreRepository.deleteByAssetIds([for (final id in watched) if (!existing.contains(id)) id]);
+
+    // Only hashed candidates can be matched against the trash.
+    final hashed = await _localAssetRepository.getHashedAssetIds(existing);
+    if (hashed.isEmpty) {
+      return;
+    }
+
+    final restorable = await _remoteAssetRepository.getTrashedBackupsForLocalIds(ownerId, hashed);
+    final restorableAssetIds = restorable.map((e) => e.localId).toSet();
+
+    // Hashed candidates that match nothing in the trash are fully resolved.
+    await _localRestoreRepository.deleteByAssetIds([for (final id in hashed) if (!restorableAssetIds.contains(id)) id]);
+
+    final remoteIds = restorable.map((e) => e.remoteId).toSet().toList();
+    if (remoteIds.isEmpty) {
+      return;
+    }
+
+    _log.fine("Restoring ${remoteIds.length} reappeared assets on the server trash: $remoteIds");
     try {
-      await _assetApiRepository.restoreTrash(restorable);
-      await _remoteAssetRepository.restoreTrash(restorable);
+      await _assetApiRepository.restoreTrash(remoteIds);
+      await _remoteAssetRepository.restoreTrash(remoteIds);
+      await _localRestoreRepository.deleteByAssetIds(restorableAssetIds);
     } catch (e, s) {
-      _log.warning("Failed to restore ${restorable.length} assets on the server; will retry next sync", e, s);
+      _log.warning("Failed to restore ${remoteIds.length} assets on the server; will retry next sync", e, s);
     }
   }
 
