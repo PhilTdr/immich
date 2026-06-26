@@ -345,6 +345,79 @@ void main() {
       verifyNever(() => mockLocalDeletionRepository.deleteByRemoteIds(any()));
     });
 
+    test('restores a reappeared candidate whose remote twin is trashed', () async {
+      when(() => mockLocalRestoreRepository.getPending(any())).thenAnswer((_) async => ['local-1']);
+      when(() => mockLocalAssetRepository.getExistingAssetIds(any())).thenAnswer((_) async => {'local-1'});
+      when(() => mockLocalAssetRepository.getHashedAssetIds(any())).thenAnswer((_) async => {'local-1'});
+      when(
+        () => mockRemoteAssetRepository.getTrashedBackupsForLocalIds(any(), any()),
+      ).thenAnswer((_) async => [(localId: 'local-1', remoteId: 'remote-1')]);
+      when(() => mockAssetApiRepository.restoreTrash(any())).thenAnswer((_) async {});
+      when(() => mockRemoteAssetRepository.restoreTrash(any())).thenAnswer((_) async {});
+
+      await sut.processRestoreQueue('owner-1');
+
+      // Offline-retry invariant: the server restore happens before the watch row
+      // and the local deletedAt are cleared.
+      verifyInOrder([
+        () => mockAssetApiRepository.restoreTrash(['remote-1']),
+        () => mockRemoteAssetRepository.restoreTrash(['remote-1']),
+        () => mockLocalRestoreRepository.deleteByAssetIds({'local-1'}),
+      ]);
+    });
+
+    test('drops a hashed candidate that matches nothing in the trash', () async {
+      when(() => mockLocalRestoreRepository.getPending(any())).thenAnswer((_) async => ['local-1']);
+      when(() => mockLocalAssetRepository.getExistingAssetIds(any())).thenAnswer((_) async => {'local-1'});
+      when(() => mockLocalAssetRepository.getHashedAssetIds(any())).thenAnswer((_) async => {'local-1'});
+      when(
+        () => mockRemoteAssetRepository.getTrashedBackupsForLocalIds(any(), any()),
+      ).thenAnswer((_) async => <({String localId, String remoteId})>[]);
+
+      await sut.processRestoreQueue('owner-1');
+
+      verify(() => mockLocalRestoreRepository.deleteByAssetIds(['local-1'])).called(1);
+      verifyNever(() => mockAssetApiRepository.restoreTrash(any()));
+    });
+
+    test('keeps a candidate that is not hashed yet', () async {
+      when(() => mockLocalRestoreRepository.getPending(any())).thenAnswer((_) async => ['local-1']);
+      when(() => mockLocalAssetRepository.getExistingAssetIds(any())).thenAnswer((_) async => {'local-1'});
+      when(() => mockLocalAssetRepository.getHashedAssetIds(any())).thenAnswer((_) async => <String>{});
+
+      await sut.processRestoreQueue('owner-1');
+
+      verifyNever(() => mockRemoteAssetRepository.getTrashedBackupsForLocalIds(any(), any()));
+      verifyNever(() => mockLocalRestoreRepository.deleteByAssetIds(['local-1']));
+      verifyNever(() => mockAssetApiRepository.restoreTrash(any()));
+    });
+
+    test('drops a candidate whose local asset disappeared again', () async {
+      when(() => mockLocalRestoreRepository.getPending(any())).thenAnswer((_) async => ['local-1']);
+      when(() => mockLocalAssetRepository.getExistingAssetIds(any())).thenAnswer((_) async => <String>{});
+
+      await sut.processRestoreQueue('owner-1');
+
+      verify(() => mockLocalRestoreRepository.deleteByAssetIds(['local-1'])).called(1);
+      verifyNever(() => mockRemoteAssetRepository.getTrashedBackupsForLocalIds(any(), any()));
+      verifyNever(() => mockAssetApiRepository.restoreTrash(any()));
+    });
+
+    test('leaves the watch row queued when the server restore fails', () async {
+      when(() => mockLocalRestoreRepository.getPending(any())).thenAnswer((_) async => ['local-1']);
+      when(() => mockLocalAssetRepository.getExistingAssetIds(any())).thenAnswer((_) async => {'local-1'});
+      when(() => mockLocalAssetRepository.getHashedAssetIds(any())).thenAnswer((_) async => {'local-1'});
+      when(
+        () => mockRemoteAssetRepository.getTrashedBackupsForLocalIds(any(), any()),
+      ).thenAnswer((_) async => [(localId: 'local-1', remoteId: 'remote-1')]);
+      when(() => mockAssetApiRepository.restoreTrash(any())).thenThrow(Exception('network'));
+
+      await sut.processRestoreQueue('owner-1');
+
+      // The restorable watch row must survive a failed restore so it is retried.
+      verifyNever(() => mockLocalRestoreRepository.deleteByAssetIds({'local-1'}));
+    });
+
     test('does nothing in the delta path when the feature is disabled', () async {
       // feature disabled by default (see setUp)
       when(() => mockNativeSyncApi.getMediaChanges()).thenAnswer(
