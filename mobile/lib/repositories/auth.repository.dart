@@ -18,6 +18,10 @@ class AuthRepository {
 
   Future<void> clearLocalData() async {
     await SyncStreamRepository(_drift).reset();
+    // The local→server deletion queue is intentionally NOT cleared here: it is a
+    // per-account, durable retry queue, so the current user's pending deletions
+    // must survive a logout / token-expiry reset. A different account's rows are
+    // owner-scoped out of every query and purged on the next user's first sync.
   }
 
   bool getEndpointSwitchingFeature() {
