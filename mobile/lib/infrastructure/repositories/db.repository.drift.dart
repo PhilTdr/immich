@@ -47,9 +47,13 @@ import 'package:immich_mobile/infrastructure/entities/settings.entity.drift.dart
     as i22;
 import 'package:immich_mobile/infrastructure/entities/asset_ocr.entity.drift.dart'
     as i23;
-import 'package:immich_mobile/infrastructure/entities/merged_asset.drift.dart'
+import 'package:immich_mobile/infrastructure/entities/local_deletion.entity.drift.dart'
     as i24;
-import 'package:drift/internal/modular.dart' as i25;
+import 'package:immich_mobile/infrastructure/entities/local_restore.entity.drift.dart'
+    as i25;
+import 'package:immich_mobile/infrastructure/entities/merged_asset.drift.dart'
+    as i26;
+import 'package:drift/internal/modular.dart' as i27;
 
 abstract class $Drift extends i0.GeneratedDatabase {
   $Drift(i0.QueryExecutor e) : super(e);
@@ -99,9 +103,13 @@ abstract class $Drift extends i0.GeneratedDatabase {
   late final i23.$AssetOcrEntityTable assetOcrEntity = i23.$AssetOcrEntityTable(
     this,
   );
-  i24.MergedAssetDrift get mergedAssetDrift => i25.ReadDatabaseContainer(
+  late final i24.$LocalDeletionEntityTable localDeletionEntity = i24
+      .$LocalDeletionEntityTable(this);
+  late final i25.$LocalRestoreEntityTable localRestoreEntity = i25
+      .$LocalRestoreEntityTable(this);
+  i26.MergedAssetDrift get mergedAssetDrift => i27.ReadDatabaseContainer(
     this,
-  ).accessor<i24.MergedAssetDrift>(i24.MergedAssetDrift.new);
+  ).accessor<i26.MergedAssetDrift>(i26.MergedAssetDrift.new);
   @override
   Iterable<i0.TableInfo<i0.Table, Object?>> get allTables =>
       allSchemaEntities.whereType<i0.TableInfo<i0.Table, Object?>>();
@@ -140,6 +148,8 @@ abstract class $Drift extends i0.GeneratedDatabase {
     assetEditEntity,
     settingsEntity,
     assetOcrEntity,
+    localDeletionEntity,
+    localRestoreEntity,
     i10.idxPartnerSharedWithId,
     i11.idxLatLng,
     i11.idxRemoteExifCity,
@@ -153,6 +163,7 @@ abstract class $Drift extends i0.GeneratedDatabase {
     i20.idxTrashedLocalAssetAlbum,
     i21.idxAssetEditAssetId,
     i23.idxAssetOcrAssetId,
+    i24.idxLocalDeletionChecksum,
   ];
   @override
   i0.StreamQueryUpdateRules
@@ -414,4 +425,8 @@ class $DriftManager {
       i22.$$SettingsEntityTableTableManager(_db, _db.settingsEntity);
   i23.$$AssetOcrEntityTableTableManager get assetOcrEntity =>
       i23.$$AssetOcrEntityTableTableManager(_db, _db.assetOcrEntity);
+  i24.$$LocalDeletionEntityTableTableManager get localDeletionEntity =>
+      i24.$$LocalDeletionEntityTableTableManager(_db, _db.localDeletionEntity);
+  i25.$$LocalRestoreEntityTableTableManager get localRestoreEntity =>
+      i25.$$LocalRestoreEntityTableTableManager(_db, _db.localRestoreEntity);
 }

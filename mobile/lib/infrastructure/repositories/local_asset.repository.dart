@@ -82,6 +82,76 @@ class DriftLocalAssetRepository extends DriftDatabaseRepository {
     return query.map((row) => row.toDto()).getSingleOrNull();
   }
 
+  /// Resolves [ids] to local assets, attaching the id of their backed-up remote
+  /// counterpart (matched by checksum). Only a non-trashed remote owned by
+  /// [ownerId] is considered, so partner/shared assets that merely share a
+  /// checksum are never resolved.
+  Future<List<LocalAsset>> getByIds(List<String> ids, {required String ownerId}) {
+    final query = _db.localAssetEntity.select().addColumns([_db.remoteAssetEntity.id]).join([
+      leftOuterJoin(
+        _db.remoteAssetEntity,
+        _db.localAssetEntity.checksum.equalsExp(_db.remoteAssetEntity.checksum) &
+            _db.remoteAssetEntity.ownerId.equals(ownerId) &
+            _db.remoteAssetEntity.deletedAt.isNull(),
+        useColumns: false,
+      ),
+    ])..where(_db.localAssetEntity.id.isIn(ids));
+
+    return query.map((row) {
+      final asset = row.readTable(_db.localAssetEntity).toDto();
+      return asset.copyWith(remoteId: row.read(_db.remoteAssetEntity.id));
+    }).get();
+  }
+
+  Future<List<({String localId, String remoteId, String checksum})>> getRemoteIdsForLocalAssets({
+    required String ownerId,
+  }) {
+    final query = _db.localAssetEntity.selectOnly()
+      ..addColumns([_db.localAssetEntity.id, _db.localAssetEntity.checksum, _db.remoteAssetEntity.id])
+      ..join([
+        innerJoin(
+          _db.remoteAssetEntity,
+          _db.remoteAssetEntity.checksum.equalsExp(_db.localAssetEntity.checksum),
+          useColumns: false,
+        ),
+      ])
+      ..where(_db.remoteAssetEntity.deletedAt.isNull() & _db.remoteAssetEntity.ownerId.equals(ownerId));
+
+    return query
+        .map(
+          (row) => (
+            localId: row.read(_db.localAssetEntity.id)!,
+            remoteId: row.read(_db.remoteAssetEntity.id)!,
+            checksum: row.read(_db.localAssetEntity.checksum)!,
+          ),
+        )
+        .get();
+  }
+
+  /// Returns the subset of [ids] that are still present
+  Future<Set<String>> getExistingAssetIds(Iterable<String> ids) async {
+    final result = <String>{};
+    for (final slice in ids.toSet().slices(kDriftMaxChunk)) {
+      final query = _db.localAssetEntity.selectOnly()
+        ..addColumns([_db.localAssetEntity.id])
+        ..where(_db.localAssetEntity.id.isIn(slice));
+      result.addAll(await query.map((row) => row.read(_db.localAssetEntity.id)!).get());
+    }
+    return result;
+  }
+
+  /// Returns the subset of [checksums] that are still present
+  Future<Set<String>> getExistingChecksums(Iterable<String> checksums) async {
+    final result = <String>{};
+    for (final slice in checksums.toSet().slices(kDriftMaxChunk)) {
+      final query = _db.localAssetEntity.selectOnly()
+        ..addColumns([_db.localAssetEntity.checksum])
+        ..where(_db.localAssetEntity.checksum.isIn(slice));
+      result.addAll((await query.map((row) => row.read(_db.localAssetEntity.checksum)).get()).nonNulls);
+    }
+    return result;
+  }
+
   Future<int> getCount() {
     return _db.managers.localAssetEntity.count();
   }

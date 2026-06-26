@@ -11,6 +11,7 @@ import 'package:immich_mobile/providers/infrastructure/asset.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/cancel.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/db.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/platform.provider.dart';
+import 'package:immich_mobile/repositories/asset_api.repository.dart';
 import 'package:immich_mobile/repositories/asset_media.repository.dart';
 import 'package:immich_mobile/repositories/permission.repository.dart';
 
@@ -41,6 +42,9 @@ final localSyncServiceProvider = Provider(
     trashedLocalAssetRepository: ref.watch(trashedLocalAssetRepository),
     assetMediaRepository: ref.watch(assetMediaRepositoryProvider),
     permissionRepository: ref.watch(permissionRepositoryProvider),
+    assetApiRepository: ref.watch(assetApiRepositoryProvider),
+    remoteAssetRepository: ref.watch(remoteAssetRepositoryProvider),
+    localDeletionRepository: ref.watch(localDeletionRepository),
     nativeSyncApi: ref.watch(nativeSyncApiProvider),
     cancellation: ref.watch(cancellationProvider),
   ),
