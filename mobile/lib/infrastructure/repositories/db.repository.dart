@@ -16,6 +16,7 @@ import 'package:immich_mobile/infrastructure/entities/local_album_asset.entity.d
 import 'package:immich_mobile/infrastructure/entities/local_asset.entity.dart';
 import 'package:immich_mobile/infrastructure/entities/local_asset.entity.drift.dart';
 import 'package:immich_mobile/infrastructure/entities/local_deletion.entity.dart';
+import 'package:immich_mobile/infrastructure/entities/local_restore.entity.dart';
 import 'package:immich_mobile/infrastructure/entities/memory.entity.dart';
 import 'package:immich_mobile/infrastructure/entities/memory_asset.entity.dart';
 import 'package:immich_mobile/infrastructure/entities/partner.entity.dart';
@@ -69,6 +70,7 @@ import 'package:sqlite_async/sqlite_async.dart';
     SettingsEntity,
     AssetOcrEntity,
     LocalDeletionEntity,
+    LocalRestoreEntity,
   ],
   include: {'package:immich_mobile/infrastructure/entities/merged_asset.drift'},
 )
@@ -122,7 +124,7 @@ class Drift extends $Drift {
   }
 
   @override
-  int get schemaVersion => 32;
+  int get schemaVersion => 33;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -323,6 +325,9 @@ class Drift extends $Drift {
               from31To32: (m, v32) async {
                 await m.createTable(v32.localDeletionEntity);
                 await m.createIndex(v32.idxLocalDeletionChecksum);
+              },
+              from32To33: (m, v33) async {
+                await m.createTable(v33.localRestoreEntity);
               },
             ),
           ),

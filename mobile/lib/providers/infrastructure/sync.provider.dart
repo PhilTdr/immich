@@ -45,6 +45,7 @@ final localSyncServiceProvider = Provider(
     assetApiRepository: ref.watch(assetApiRepositoryProvider),
     remoteAssetRepository: ref.watch(remoteAssetRepositoryProvider),
     localDeletionRepository: ref.watch(localDeletionRepository),
+    localRestoreRepository: ref.watch(localRestoreRepository),
     nativeSyncApi: ref.watch(nativeSyncApiProvider),
     cancellation: ref.watch(cancellationProvider),
   ),

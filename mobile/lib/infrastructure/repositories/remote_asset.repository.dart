@@ -1,4 +1,6 @@
+import 'package:collection/collection.dart';
 import 'package:drift/drift.dart';
+import 'package:immich_mobile/constants/constants.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/domain/models/asset_edit.model.dart';
 import 'package:immich_mobile/domain/models/exif.model.dart';
@@ -172,6 +174,42 @@ class RemoteAssetRepository extends DriftDatabaseRepository {
     await (_db.remoteAssetEntity.update()..where((t) => t.deletedAt.isNotNull() & t.ownerId.equals(ownerId))).write(
       const RemoteAssetEntityCompanion(deletedAt: Value(null)),
     );
+  }
+
+  /// For the watched restore candidates [localIds], returns the
+  /// `(localId, remoteId)` pairs whose (already hashed) checksum matches one of
+  /// [ownerId]'s own assets that is currently in the server trash (`deletedAt`
+  /// is set). Owner-scoped so partner/shared assets sharing a checksum are never
+  /// restored; local assets without a checksum yet (not hashed) match nothing,
+  /// since the checksum join excludes nulls.
+  Future<List<({String localId, String remoteId})>> getTrashedBackupsForLocalIds(
+    String ownerId,
+    Iterable<String> localIds,
+  ) async {
+    final result = <({String localId, String remoteId})>[];
+    for (final slice in localIds.toSet().slices(kDriftMaxChunk)) {
+      final query = _db.remoteAssetEntity.selectOnly()
+        ..addColumns([_db.localAssetEntity.id, _db.remoteAssetEntity.id])
+        ..join([
+          innerJoin(
+            _db.localAssetEntity,
+            _db.localAssetEntity.checksum.equalsExp(_db.remoteAssetEntity.checksum),
+            useColumns: false,
+          ),
+        ])
+        ..where(
+          _db.remoteAssetEntity.ownerId.equals(ownerId) &
+              _db.remoteAssetEntity.deletedAt.isNotNull() &
+              _db.localAssetEntity.id.isIn(slice),
+        );
+
+      result.addAll(
+        await query
+            .map((row) => (localId: row.read(_db.localAssetEntity.id)!, remoteId: row.read(_db.remoteAssetEntity.id)!))
+            .get(),
+      );
+    }
+    return result;
   }
 
   Future<void> delete(List<String> ids) {

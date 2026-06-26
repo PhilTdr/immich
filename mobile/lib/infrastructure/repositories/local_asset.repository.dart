@@ -152,6 +152,29 @@ class DriftLocalAssetRepository extends DriftDatabaseRepository {
     return result;
   }
 
+  /// Local asset ids that have not been hashed yet (`checksum` is null) — the
+  /// new/changed/reappeared assets still awaiting a checksum. Used to seed the
+  /// restore watch queue on a full sync.
+  Future<List<String>> getUnhashedAssetIds() {
+    final query = _db.localAssetEntity.selectOnly()
+      ..addColumns([_db.localAssetEntity.id])
+      ..where(_db.localAssetEntity.checksum.isNull());
+    return query.map((row) => row.read(_db.localAssetEntity.id)!).get();
+  }
+
+  /// Subset of [ids] whose local asset has already been hashed (`checksum` is
+  /// set). A watched restore candidate can only be resolved once it is hashed.
+  Future<Set<String>> getHashedAssetIds(Iterable<String> ids) async {
+    final result = <String>{};
+    for (final slice in ids.toSet().slices(kDriftMaxChunk)) {
+      final query = _db.localAssetEntity.selectOnly()
+        ..addColumns([_db.localAssetEntity.id])
+        ..where(_db.localAssetEntity.id.isIn(slice) & _db.localAssetEntity.checksum.isNotNull());
+      result.addAll(await query.map((row) => row.read(_db.localAssetEntity.id)!).get());
+    }
+    return result;
+  }
+
   Future<int> getCount() {
     return _db.managers.localAssetEntity.count();
   }

@@ -653,4 +653,14 @@ void main() {
       expect(await sut.getExistingChecksums(['checksum-2', 'checksum-missing']), {'checksum-2'});
     });
   });
+
+  group('getUnhashedAssetIds / getHashedAssetIds', () {
+    test('partition local assets by whether they have a checksum', () async {
+      await ctx.newLocalAsset(id: 'hashed-1', checksum: 'checksum-1');
+      await ctx.newLocalAsset(id: 'unhashed-1', checksumOption: const Option.none());
+
+      expect(await sut.getUnhashedAssetIds(), ['unhashed-1']);
+      expect(await sut.getHashedAssetIds(['hashed-1', 'unhashed-1', 'missing']), {'hashed-1'});
+    });
+  });
 }
