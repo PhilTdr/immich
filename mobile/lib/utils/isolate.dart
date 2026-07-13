@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/domain/services/log.service.dart';
 import 'package:immich_mobile/entities/store.entity.dart';
+import 'package:immich_mobile/infrastructure/repositories/settings.repository.dart';
 import 'package:immich_mobile/providers/infrastructure/cancel.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/db.provider.dart';
 import 'package:immich_mobile/utils/bootstrap.dart';
@@ -48,6 +49,7 @@ Cancelable<T?> runInIsolateGentle<T>({
       ref.dispose();
       await Store.dispose();
       await LogService.I.dispose();
+      SettingsRepository.reset();
       await logDb.close();
       await drift.close();
     }

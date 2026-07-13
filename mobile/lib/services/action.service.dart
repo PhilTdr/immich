@@ -11,8 +11,10 @@ import 'package:immich_mobile/domain/services/tag.service.dart';
 import 'package:immich_mobile/entities/store.entity.dart';
 import 'package:immich_mobile/extensions/platform_extensions.dart';
 import 'package:immich_mobile/infrastructure/repositories/local_asset.repository.dart';
+import 'package:immich_mobile/infrastructure/repositories/local_deletion.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/remote_album.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/remote_asset.repository.dart';
+import 'package:immich_mobile/infrastructure/repositories/settings.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/trashed_local_asset.repository.dart';
 import 'package:immich_mobile/providers/infrastructure/album.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/asset.provider.dart';
@@ -38,6 +40,7 @@ final actionServiceProvider = Provider<ActionService>(
     ref.watch(assetMediaRepositoryProvider),
     ref.watch(downloadRepositoryProvider),
     ref.watch(tagServiceProvider),
+    ref.watch(localDeletionRepository),
   ),
 );
 
@@ -51,6 +54,7 @@ class ActionService {
   final AssetMediaRepository _assetMediaRepository;
   final DownloadRepository _downloadRepository;
   final TagService _tagService;
+  final DriftLocalDeletionRepository _localDeletionRepository;
 
   const ActionService(
     this._assetApiRepository,
@@ -62,6 +66,7 @@ class ActionService {
     this._assetMediaRepository,
     this._downloadRepository,
     this._tagService,
+    this._localDeletionRepository,
   );
 
   Future<void> shareLink(List<String> remoteIds, BuildContext context) async {
@@ -314,7 +319,23 @@ class ActionService {
   }
 
   Future<int> _deleteLocalAssets(List<String> localIds) async {
-    final deletedIds = await _assetMediaRepository.deleteAll(localIds);
+    // These deletions keep the remote copy. The deletion sync must skip them.
+    final exclude = SettingsRepository.instance.appConfig.backup.syncLocalDeletions;
+    if (exclude) {
+      await _localDeletionRepository.markExcluded(localIds);
+    }
+    final List<String> deletedIds;
+    try {
+      deletedIds = await _assetMediaRepository.deleteAll(localIds);
+    } catch (_) {
+      if (exclude) {
+        await _localDeletionRepository.unmarkExcluded(localIds);
+      }
+      rethrow;
+    }
+    if (exclude && deletedIds.length != localIds.length) {
+      await _localDeletionRepository.unmarkExcluded(localIds.toSet().difference(deletedIds.toSet()));
+    }
     if (deletedIds.isEmpty) {
       return 0;
     }

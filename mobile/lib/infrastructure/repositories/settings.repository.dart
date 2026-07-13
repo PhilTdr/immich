@@ -31,6 +31,9 @@ class SettingsRepository extends DriftDatabaseRepository {
     return _instance!;
   }
 
+  // Reused worker isolates must not keep a stale snapshot over a closed db.
+  static void reset() => _instance = null;
+
   Future<void> refresh() async => _applyOverrides(await _db.select(_db.settingsEntity).get());
 
   Future<void> clear(Iterable<SettingsKey> keys) async {

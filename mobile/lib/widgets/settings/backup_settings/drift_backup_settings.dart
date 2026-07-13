@@ -12,12 +12,18 @@ import 'package:immich_mobile/extensions/platform_extensions.dart';
 import 'package:immich_mobile/extensions/translate_extensions.dart';
 import 'package:immich_mobile/providers/background_sync.provider.dart';
 import 'package:immich_mobile/providers/backup/backup_album.provider.dart';
+import 'package:immich_mobile/providers/infrastructure/asset.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/platform.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/settings.provider.dart';
 import 'package:immich_mobile/providers/user.provider.dart';
+import 'package:immich_mobile/repositories/permission.repository.dart';
 import 'package:immich_mobile/widgets/settings/setting_group_title.dart';
 import 'package:immich_mobile/widgets/settings/setting_list_tile.dart';
 import 'package:immich_mobile/widgets/settings/settings_sub_page_scaffold.dart';
+
+final _fullMediaPermissionProvider = FutureProvider.autoDispose<bool>(
+  (ref) => ref.watch(permissionRepositoryProvider).hasFullMediaPermission(),
+);
 
 class DriftBackupSettings extends ConsumerWidget {
   const DriftBackupSettings({super.key});
@@ -47,6 +53,12 @@ class DriftBackupSettings extends ConsumerWidget {
           icon: Icons.sync,
         ),
         const _AlbumSyncActionButton(),
+        const Divider(),
+        SettingGroupTitle(
+          title: "sync_deletions".t(context: context),
+          icon: Icons.auto_delete_outlined,
+        ),
+        const _SyncLocalDeletionsButton(),
       ],
     );
   }
@@ -162,6 +174,7 @@ class _BackupSwitchTile extends ConsumerWidget {
   final bool Function(AppConfig) selector;
   final String titleKey;
   final String subtitleKey;
+  final bool enabled;
   final void Function(bool)? onChanged;
 
   const _BackupSwitchTile({
@@ -169,6 +182,7 @@ class _BackupSwitchTile extends ConsumerWidget {
     required this.selector,
     required this.titleKey,
     required this.subtitleKey,
+    this.enabled = true,
     this.onChanged,
   });
 
@@ -182,10 +196,12 @@ class _BackupSwitchTile extends ConsumerWidget {
         subtitle: subtitleKey.t(context: context),
         trailing: Switch(
           value: value,
-          onChanged: (bool newValue) async {
-            await ref.read(settingsProvider).write(metadataKey, newValue);
-            onChanged?.call(newValue);
-          },
+          onChanged: !enabled
+              ? null
+              : (bool newValue) async {
+                  await ref.read(settingsProvider).write(metadataKey, newValue);
+                  onChanged?.call(newValue);
+                },
         ),
       ),
     );
@@ -294,6 +310,30 @@ class _BackupDelaySlider extends ConsumerWidget {
           label: formatBackupDelaySliderValue(currentValue),
         ),
       ],
+    );
+  }
+}
+
+class _SyncLocalDeletionsButton extends ConsumerWidget {
+  const _SyncLocalDeletionsButton();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final deletionRepository = ref.watch(localDeletionRepository);
+    final hasFullAccess = ref.watch(_fullMediaPermissionProvider).valueOrNull ?? true;
+    return _BackupSwitchTile(
+      metadataKey: SettingsKey.backupSyncLocalDeletions,
+      selector: (c) => c.backup.syncLocalDeletions,
+      titleKey: "sync_local_deletions_setting_title",
+      subtitleKey: hasFullAccess
+          ? "sync_local_deletions_setting_description"
+          : "sync_local_deletions_setting_description_without_permission",
+      enabled: hasFullAccess,
+      onChanged: (enabled) {
+        if (!enabled) {
+          unawaited(deletionRepository.deleteAll());
+        }
+      },
     );
   }
 }

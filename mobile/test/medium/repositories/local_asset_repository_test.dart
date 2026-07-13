@@ -567,4 +567,75 @@ void main() {
       expect(updated?.checksum, isNull);
     });
   });
+
+  group('getByIds', () {
+    late String userId;
+
+    setUp(() async {
+      userId = (await ctx.newUser()).id;
+    });
+
+    test('attaches the remote id of the current users own non-trashed backup', () async {
+      final remote = await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1');
+      final local = await ctx.newLocalAsset(id: 'local-1', checksum: 'checksum-1');
+
+      final result = await sut.getByIds(['local-1'], ownerId: userId);
+
+      expect(result.length, 1);
+      expect(result.single.id, local.id);
+      expect(result.single.remoteId, remote.id);
+    });
+
+    test('does not resolve a partner-owned remote that merely shares the checksum', () async {
+      final partner = await ctx.newUser();
+      // Only the partner owns a remote for this checksum.
+      await ctx.newRemoteAsset(ownerId: partner.id, checksum: 'shared-checksum');
+      await ctx.newLocalAsset(id: 'local-1', checksum: 'shared-checksum');
+
+      final result = await sut.getByIds(['local-1'], ownerId: userId);
+
+      expect(result.single.remoteId, isNull);
+    });
+
+    test('does not resolve an already-trashed remote', () async {
+      await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1', deletedAt: DateTime(2024));
+      await ctx.newLocalAsset(id: 'local-1', checksum: 'checksum-1');
+
+      final result = await sut.getByIds(['local-1'], ownerId: userId);
+
+      expect(result.single.remoteId, isNull);
+    });
+
+    test('does not resolve an external-library remote that shares the checksum', () async {
+      await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1', libraryId: 'library-1');
+      await ctx.newLocalAsset(id: 'local-1', checksum: 'checksum-1');
+
+      final result = await sut.getByIds(['local-1'], ownerId: userId);
+
+      expect(result.single.remoteId, isNull);
+    });
+
+    test('resolves only the uploaded remote when an external-library copy also matches', () async {
+      final uploaded = await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1');
+      await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1', libraryId: 'library-1');
+      await ctx.newLocalAsset(id: 'local-1', checksum: 'checksum-1');
+
+      final result = await sut.getByIds(['local-1'], ownerId: userId);
+
+      expect(result.single.remoteId, uploaded.id);
+    });
+
+    test('returns an empty list for empty input', () async {
+      expect(await sut.getByIds([], ownerId: userId), isEmpty);
+    });
+  });
+
+  group('getExistingChecksums', () {
+    test('returns only the checksums that are still present', () async {
+      await ctx.newLocalAsset(id: 'asset-1', checksum: 'checksum-1');
+      await ctx.newLocalAsset(id: 'asset-2', checksum: 'checksum-2');
+
+      expect(await sut.getExistingChecksums(['checksum-2', 'checksum-missing']), {'checksum-2'});
+    });
+  });
 }

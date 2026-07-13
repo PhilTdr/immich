@@ -2,11 +2,17 @@ import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/constants/enums.dart';
 import 'package:immich_mobile/extensions/platform_extensions.dart';
 import 'package:immich_mobile/infrastructure/repositories/local_asset.repository.dart';
+import 'package:immich_mobile/infrastructure/repositories/local_deletion.repository.dart';
+import 'package:immich_mobile/infrastructure/repositories/settings.repository.dart';
 import 'package:immich_mobile/providers/infrastructure/asset.provider.dart';
 import 'package:immich_mobile/repositories/asset_media.repository.dart';
 
 final cleanupServiceProvider = Provider<CleanupService>((ref) {
-  return CleanupService(ref.watch(localAssetRepository), ref.watch(assetMediaRepositoryProvider));
+  return CleanupService(
+    ref.watch(localAssetRepository),
+    ref.watch(assetMediaRepositoryProvider),
+    ref.watch(localDeletionRepository),
+  );
 });
 
 class CleanupService {
@@ -14,8 +20,9 @@ class CleanupService {
 
   final DriftLocalAssetRepository _localAssetRepository;
   final AssetMediaRepository _assetMediaRepository;
+  final DriftLocalDeletionRepository _localDeletionRepository;
 
-  const CleanupService(this._localAssetRepository, this._assetMediaRepository);
+  const CleanupService(this._localAssetRepository, this._assetMediaRepository, this._localDeletionRepository);
 
   Future<RemovalCandidatesResult> getRemovalCandidates(
     String userId,
@@ -38,13 +45,29 @@ class CleanupService {
       return 0;
     }
 
+    // These deletions keep the remote copy. The deletion sync must skip them.
+    final exclude = SettingsRepository.instance.appConfig.backup.syncLocalDeletions;
     int deletedCount = 0;
 
     for (int index = 0; index < localIds.length; index += _deleteBatchSize) {
       final end = index + _deleteBatchSize < localIds.length ? index + _deleteBatchSize : localIds.length;
       final batch = localIds.sublist(index, end);
 
-      final deletedIds = await _assetMediaRepository.deleteAll(batch);
+      if (exclude) {
+        await _localDeletionRepository.markExcluded(batch);
+      }
+      final List<String> deletedIds;
+      try {
+        deletedIds = await _assetMediaRepository.deleteAll(batch);
+      } catch (_) {
+        if (exclude) {
+          await _localDeletionRepository.unmarkExcluded(batch);
+        }
+        rethrow;
+      }
+      if (exclude && deletedIds.length != batch.length) {
+        await _localDeletionRepository.unmarkExcluded(batch.toSet().difference(deletedIds.toSet()));
+      }
       if (deletedIds.isNotEmpty) {
         await _localAssetRepository.delete(deletedIds);
         deletedCount += deletedIds.length;
