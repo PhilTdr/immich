@@ -44,6 +44,9 @@ class SettingsRepository extends CachedKeyValueRepository<SettingsKey, AppConfig
 
   AppConfig get appConfig => snapshot;
 
+  // Reused worker isolates must not keep a stale snapshot over a closed db.
+  static void reset() => _instance = null;
+
   Future<void> clear(Iterable<SettingsKey> keys) async {
     if (keys.isEmpty) {
       return;

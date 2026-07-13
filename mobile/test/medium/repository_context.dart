@@ -127,7 +127,7 @@ class MediumRepositoryContext {
             stackId: .new(stackId),
             localDateTime: .new(createdAt.toLocal()),
             thumbHash: .new(TestUtils.uuid(thumbHash)),
-            libraryId: .new(TestUtils.uuid(libraryId)),
+            libraryId: .new(libraryId),
           ),
         );
   }

@@ -1,4 +1,6 @@
+import 'package:device_info_plus/device_info_plus.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
+import 'package:immich_mobile/extensions/platform_extensions.dart';
 import 'package:immich_mobile/platform/permission_api.g.dart';
 import 'package:immich_mobile/providers/infrastructure/platform.provider.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -39,6 +41,22 @@ class PermissionRepository implements IPermissionRepository {
     return openAppSettings();
   }
 
+  /// Full (not limited/selected) photo library access. Limited access hides
+  /// assets from the media queries and must not be mistaken for deletions.
+  @override
+  Future<bool> hasFullMediaPermission() async {
+    if (CurrentPlatform.isAndroid) {
+      final androidInfo = await DeviceInfoPlugin().androidInfo;
+      if (androidInfo.version.sdkInt <= 32) {
+        return (await Permission.storage.status).isGranted;
+      }
+      final photos = await Permission.photos.status;
+      final videos = await Permission.videos.status;
+      return photos.isGranted && videos.isGranted;
+    }
+    return (await Permission.photos.status).isGranted;
+  }
+
   @override
   Future<bool> hasManageMediaPermission() {
     return _permissionApi.hasManageMediaPermission();
@@ -61,6 +79,7 @@ abstract interface class IPermissionRepository {
   Future<bool> hasLocationAlwaysPermission();
   Future<bool> requestLocationAlwaysPermission();
   Future<bool> openSettings();
+  Future<bool> hasFullMediaPermission();
   Future<bool> hasManageMediaPermission();
   Future<bool> requestManageMediaPermission();
   Future<bool> manageMediaPermission();

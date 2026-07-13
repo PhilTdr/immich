@@ -82,12 +82,56 @@ class DriftLocalAssetRepository extends DriftDatabaseRepository {
     return query.map((row) => row.toDto()).getSingleOrNull();
   }
 
+  /// Resolves [ids] to local assets, attaching the id of their remote
+  /// counterpart. Only a non-trashed, non-external-library remote owned by
+  /// [ownerId] is considered, so partner/shared/library assets that merely
+  /// share a checksum are never resolved.
+  Future<List<LocalAsset>> getByIds(List<String> ids, {required String ownerId}) async {
+    final result = <LocalAsset>[];
+    for (final slice in ids.toSet().slices(kDriftMaxChunk)) {
+      final query = _db.localAssetEntity.select().addColumns([_db.remoteAssetEntity.id]).join([
+        leftOuterJoin(
+          _db.remoteAssetEntity,
+          _db.localAssetEntity.checksum.equalsExp(_db.remoteAssetEntity.checksum) &
+              _db.remoteAssetEntity.ownerId.equals(ownerId) &
+              _db.remoteAssetEntity.deletedAt.isNull() &
+              _db.remoteAssetEntity.libraryId.isNull(),
+          useColumns: false,
+        ),
+      ])..where(_db.localAssetEntity.id.isIn(slice));
+
+      result.addAll(
+        await query.map((row) {
+          final asset = row.readTable(_db.localAssetEntity).toDto();
+          return asset.copyWith(remoteId: row.read(_db.remoteAssetEntity.id));
+        }).get(),
+      );
+    }
+    return result;
+  }
+
+  /// Returns the subset of [checksums] that still exist in the local asset table.
+  Future<Set<String>> getExistingChecksums(Iterable<String> checksums) async {
+    final result = <String>{};
+    for (final slice in checksums.toSet().slices(kDriftMaxChunk)) {
+      final query = _db.localAssetEntity.selectOnly()
+        ..addColumns([_db.localAssetEntity.checksum])
+        ..where(_db.localAssetEntity.checksum.isIn(slice));
+      result.addAll((await query.map((row) => row.read(_db.localAssetEntity.checksum)).get()).nonNulls);
+    }
+    return result;
+  }
+
   Future<int> getCount() {
     return _db.managers.localAssetEntity.count();
   }
 
   Future<int> getHashedCount() {
     return _db.managers.localAssetEntity.filter((e) => e.checksum.isNull().not()).count();
+  }
+
+  Future<int> getUnhashedCount() {
+    return _db.managers.localAssetEntity.filter((e) => e.checksum.isNull()).count();
   }
 
   Future<List<LocalAlbum>> getSourceAlbums(String localAssetId, {BackupSelection? backupSelection}) {
