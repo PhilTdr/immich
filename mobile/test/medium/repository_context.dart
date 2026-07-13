@@ -150,7 +150,7 @@ class MediumRepositoryContext {
             localDateTime: .new(date),
             groupDate: .new(timelineGroupDate(date)),
             thumbHash: .new(TestUtils.uuid(thumbHash)),
-            libraryId: .new(TestUtils.uuid(libraryId)),
+            libraryId: .new(libraryId),
           ),
         );
   }

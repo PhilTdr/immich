@@ -3,11 +3,13 @@ import 'package:drift/native.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:immich_mobile/data/db/main/database.dart';
+import 'package:immich_mobile/domain/models/settings_key.dart';
 import 'package:immich_mobile/domain/models/stack.model.dart';
 import 'package:immich_mobile/domain/models/store.model.dart';
 import 'package:immich_mobile/domain/services/asset.service.dart';
 import 'package:immich_mobile/domain/services/store.service.dart';
 import 'package:immich_mobile/entities/store.entity.dart';
+import 'package:immich_mobile/infrastructure/repositories/settings.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/store.repository.dart';
 import 'package:mocktail/mocktail.dart';
 
@@ -28,6 +30,7 @@ void main() {
     debugDefaultTargetPlatformOverride = TargetPlatform.android;
     db = Drift(drift.DatabaseConnection(NativeDatabase.memory(), closeStreamsSynchronously: true));
     await StoreService.init(storeRepository: StoreRepository(db));
+    await SettingsRepository.ensureInitialized(db);
   });
 
   tearDownAll(() async {
@@ -49,11 +52,13 @@ void main() {
       apiRepository: apiRepository,
       mediaRepository: mocks.assetMedia.api,
       trashedLocalRepository: mocks.trashedAsset,
+      localDeletionRepository: mocks.localDeletion.repo,
     );
   });
 
   tearDown(() async {
     await Store.delete(StoreKey.manageLocalMediaAndroid);
+    await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletions, false);
   });
 
   group('AssetService.updateDateTime', () {
@@ -118,6 +123,49 @@ void main() {
       verify(() => mocks.assetMedia.api.deleteAll(ids, trash: false)).called(1);
       verify(() => mocks.localAsset.repo.deleteAssets(ids)).called(1);
       verifyNever(() => mocks.trashedAsset.applyTrashedAssets(any()));
+    });
+
+    test('does not touch the deletion-sync exclusions when the feature is disabled', () async {
+      await sut.deleteLocal(ids);
+
+      verifyNever(mocks.localDeletion.markExcluded);
+      verifyNever(mocks.localDeletion.unmarkExcluded);
+    });
+
+    test('marks ids as excluded before deleting when the deletion sync is enabled', () async {
+      await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletions, true);
+
+      await sut.deleteLocal(ids);
+
+      verifyInOrder([
+        () => mocks.localDeletion.repo.markExcluded(ids),
+        () => mocks.assetMedia.api.deleteAll(ids, trash: true),
+        () => mocks.localAsset.repo.deleteAssets(ids),
+      ]);
+      verifyNever(mocks.localDeletion.unmarkExcluded);
+    });
+
+    test('unmarks ids whose native deletion failed when the deletion sync is enabled', () async {
+      await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletions, true);
+      when(() => mocks.assetMedia.api.deleteAll(ids, trash: true)).thenAnswer((_) async => ['l1']);
+
+      await sut.deleteLocal(ids);
+
+      final unmarked =
+          verify(() => mocks.localDeletion.repo.unmarkExcluded(captureAny())).captured.single as Iterable<String>;
+      expect(unmarked, ['l2']);
+    });
+
+    test('unmarks all ids when the native deletion throws', () async {
+      await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletions, true);
+      when(() => mocks.assetMedia.api.deleteAll(ids, trash: true)).thenThrow(Exception('plugin error'));
+
+      await expectLater(sut.deleteLocal(ids), throwsException);
+
+      final unmarked =
+          verify(() => mocks.localDeletion.repo.unmarkExcluded(captureAny())).captured.single as Iterable<String>;
+      expect(unmarked, ids);
+      verifyNever(() => mocks.localAsset.repo.deleteAssets(any()));
     });
   });
 

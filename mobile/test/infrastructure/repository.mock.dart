@@ -4,6 +4,7 @@ import 'package:immich_mobile/data/db/main/database.dart';
 import 'package:immich_mobile/infrastructure/repositories/backup.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/local_album.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/local_asset.repository.dart';
+import 'package:immich_mobile/infrastructure/repositories/local_deletion.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/log.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/memory.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/partner.repository.dart';
@@ -39,6 +40,8 @@ class MockLocalAlbumRepository extends Mock implements LocalAlbumRepository {}
 class MockRemoteAlbumRepository extends Mock implements RemoteAlbumRepository {}
 
 class MockLocalAssetRepository extends Mock implements LocalAssetRepository {}
+
+class MockLocalDeletionRepository extends Mock implements LocalDeletionRepository {}
 
 class MockRemoteAssetRepository extends Mock implements RemoteAssetRepository {}
 

@@ -1,21 +1,29 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:drift/drift.dart' as drift;
 import 'package:drift/native.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:immich_mobile/constants/enums.dart';
 import 'package:immich_mobile/data/db/main/database.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
+import 'package:immich_mobile/domain/models/settings_key.dart';
 import 'package:immich_mobile/domain/models/store.model.dart';
 import 'package:immich_mobile/domain/services/local_sync.service.dart';
 import 'package:immich_mobile/domain/services/store.service.dart';
 import 'package:immich_mobile/entities/store.entity.dart';
 import 'package:immich_mobile/infrastructure/repositories/local_album.repository.dart';
+import 'package:immich_mobile/infrastructure/repositories/settings.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/store.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/trashed_local_asset.repository.dart';
 import 'package:immich_mobile/platform/native_sync_api.g.dart';
 import 'package:immich_mobile/repositories/asset_media.repository.dart';
 import 'package:mocktail/mocktail.dart';
+import 'package:openapi/api.dart' show ApiException;
 
 import '../../fixtures/asset.stub.dart';
+import '../../fixtures/user.stub.dart';
 import '../../infrastructure/repository.mock.dart';
 import '../../repository.mocks.dart';
 import '../../service.mocks.dart';
@@ -23,9 +31,14 @@ import '../../service.mocks.dart';
 void main() {
   late LocalSyncService sut;
   late LocalAlbumRepository mockLocalAlbumRepository;
+  late MockLocalAssetRepository mockLocalAssetRepository;
   late TrashedLocalAssetRepository mockTrashedLocalAssetRepository;
   late AssetMediaRepository mockAssetMediaRepository;
   late MockPermissionRepository mockPermissionRepository;
+  late MockDevicePermissionService mockDevicePermissionService;
+  late MockAssetApiRepository mockAssetApiRepository;
+  late MockRemoteAssetRepository mockRemoteAssetRepository;
+  late MockLocalDeletionRepository mockLocalDeletionRepository;
   late MockNativeSyncApi mockNativeSyncApi;
   late Drift db;
 
@@ -35,6 +48,7 @@ void main() {
 
     db = Drift(drift.DatabaseConnection(NativeDatabase.memory(), closeStreamsSynchronously: true));
     await StoreService.init(storeRepository: StoreRepository(db));
+    await SettingsRepository.ensureInitialized(db);
   });
 
   tearDownAll(() async {
@@ -45,9 +59,14 @@ void main() {
 
   setUp(() async {
     mockLocalAlbumRepository = MockLocalAlbumRepository();
+    mockLocalAssetRepository = MockLocalAssetRepository();
     mockTrashedLocalAssetRepository = MockTrashedLocalAssetRepository();
     mockAssetMediaRepository = MockAssetMediaRepository();
     mockPermissionRepository = MockPermissionRepository();
+    mockDevicePermissionService = MockDevicePermissionService();
+    mockAssetApiRepository = MockAssetApiRepository();
+    mockRemoteAssetRepository = MockRemoteAssetRepository();
+    mockLocalDeletionRepository = MockLocalDeletionRepository();
     mockNativeSyncApi = MockNativeSyncApi();
 
     when(() => mockNativeSyncApi.shouldFullSync()).thenAnswer((_) async => false);
@@ -67,14 +86,34 @@ void main() {
 
     sut = LocalSyncService(
       localAlbumRepository: mockLocalAlbumRepository,
+      localAssetRepository: mockLocalAssetRepository,
       trashedLocalAssetRepository: mockTrashedLocalAssetRepository,
       assetMediaRepository: mockAssetMediaRepository,
       permissionRepository: mockPermissionRepository,
+      devicePermissionService: mockDevicePermissionService,
+      assetApiRepository: mockAssetApiRepository,
+      remoteAssetRepository: mockRemoteAssetRepository,
+      localDeletionRepository: mockLocalDeletionRepository,
       nativeSyncApi: mockNativeSyncApi,
     );
 
+    await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletions, false);
+    await Store.put(StoreKey.currentUser, UserStub.admin);
+    when(() => mockLocalDeletionRepository.upsert(any(), any())).thenAnswer((_) async {});
+    when(() => mockLocalDeletionRepository.getPending(any())).thenAnswer((_) async => []);
+    when(() => mockLocalDeletionRepository.getBackedUp(any(), any())).thenAnswer((_) async => {});
+    when(() => mockLocalDeletionRepository.deleteByRemoteIds(any())).thenAnswer((_) async {});
+    when(() => mockLocalDeletionRepository.pruneAlreadyTrashed()).thenAnswer((_) async {});
+    when(() => mockLocalDeletionRepository.pruneRestored(any())).thenAnswer((_) async {});
+    when(() => mockLocalDeletionRepository.getExcluded(any())).thenAnswer((_) async => <String>{});
+    when(() => mockLocalDeletionRepository.unmarkExcluded(any())).thenAnswer((_) async {});
+    when(() => mockLocalDeletionRepository.snapshotBackedUpAssets(any())).thenAnswer((_) async {});
+    when(() => mockLocalDeletionRepository.queueDeletionsFromSnapshot(any())).thenAnswer((_) async {});
+    when(() => mockLocalAssetRepository.getUnhashedCount()).thenAnswer((_) async => 0);
+
     await Store.put(StoreKey.manageLocalMediaAndroid, false);
     when(() => mockPermissionRepository.hasManageMediaPermission()).thenAnswer((_) async => false);
+    when(() => mockDevicePermissionService.galleryStatus()).thenAnswer((_) async => DevicePermissionStatus.granted);
   });
 
   group('LocalSyncService - syncTrashedAssets gating', () {
@@ -213,6 +252,299 @@ void main() {
 
       verifyNever(() => mockAssetMediaRepository.deleteAll(any()));
       verifyNever(() => mockTrashedLocalAssetRepository.trashLocalAsset(any()));
+    });
+  });
+
+  group('LocalSyncService - record locally deleted assets', () {
+    test('queues backed-up deleted assets as pending deletions (no server call yet)', () async {
+      when(
+        () => mockLocalDeletionRepository.getBackedUp(any(), any()),
+      ).thenAnswer((_) async => {'remote-1': 'checksum-1', 'remote-2': 'checksum-2'});
+
+      await sut.recordLocallyDeletedFromDelta(['local-1', 'local-2'], 'owner-1');
+
+      verify(
+        () => mockLocalDeletionRepository.upsert('owner-1', {'remote-1': 'checksum-1', 'remote-2': 'checksum-2'}),
+      ).called(1);
+      verifyNever(() => mockAssetApiRepository.delete(any(), any()));
+      verifyNever(() => mockRemoteAssetRepository.trash(any()));
+    });
+
+    test('skips app-initiated deletions and returns them for later cleanup', () async {
+      when(() => mockLocalDeletionRepository.getExcluded(any())).thenAnswer((_) async => {'local-excluded'});
+      when(() => mockLocalDeletionRepository.getBackedUp(any(), any())).thenAnswer((_) async => {'r-1': 'c-1'});
+
+      final excluded = await sut.recordLocallyDeletedFromDelta(['local-excluded', 'local-1'], 'owner-1');
+
+      expect(excluded, {'local-excluded'});
+      verify(() => mockLocalDeletionRepository.getBackedUp('owner-1', ['local-1'])).called(1);
+    });
+
+    test('does not resolve anything when every deletion is app-initiated', () async {
+      when(() => mockLocalDeletionRepository.getExcluded(any())).thenAnswer((_) async => {'local-excluded'});
+
+      final excluded = await sut.recordLocallyDeletedFromDelta(['local-excluded'], 'owner-1');
+
+      expect(excluded, {'local-excluded'});
+      verifyNever(() => mockLocalDeletionRepository.getBackedUp(any(), any()));
+      verifyNever(() => mockLocalDeletionRepository.upsert(any(), any()));
+    });
+  });
+
+  group('LocalSyncService - flush pending deletions', () {
+    test('moves pending deletions to the server trash and clears their queue rows', () async {
+      when(() => mockLocalDeletionRepository.getPending(any())).thenAnswer((_) async => ['remote-1', 'remote-2']);
+      when(() => mockAssetApiRepository.delete(any(), any())).thenAnswer((_) async {});
+      when(() => mockRemoteAssetRepository.trash(any())).thenAnswer((_) async {});
+
+      await sut.flushPendingDeletions('owner-1');
+
+      verifyInOrder([
+        () => mockLocalDeletionRepository.pruneAlreadyTrashed(),
+        () => mockLocalDeletionRepository.pruneRestored('owner-1'),
+        () => mockLocalDeletionRepository.getPending('owner-1'),
+        () => mockAssetApiRepository.delete(['remote-1', 'remote-2'], false),
+        () => mockRemoteAssetRepository.trash(['remote-1', 'remote-2']),
+        () => mockLocalDeletionRepository.deleteByRemoteIds(['remote-1', 'remote-2']),
+      ]);
+    });
+
+    test('leaves deletions queued when the server call fails', () async {
+      when(() => mockLocalDeletionRepository.getPending(any())).thenAnswer((_) async => ['remote-1']);
+      when(() => mockAssetApiRepository.delete(any(), any())).thenThrow(Exception('network'));
+
+      await sut.flushPendingDeletions('owner-1');
+
+      // The queue row must survive a failed flush so it is retried on the next sync.
+      verifyNever(() => mockLocalDeletionRepository.deleteByRemoteIds(any()));
+      verifyNever(() => mockRemoteAssetRepository.trash(any()));
+    });
+
+    test('keeps the queue when the client reports a transport failure as code 400', () async {
+      when(() => mockLocalDeletionRepository.getPending(any())).thenAnswer((_) async => ['remote-1']);
+      when(
+        () => mockAssetApiRepository.delete(any(), any()),
+      ).thenThrow(ApiException.withInner(400, 'offline', const SocketException('offline'), StackTrace.empty));
+
+      await sut.flushPendingDeletions('owner-1');
+
+      verifyNever(() => mockLocalDeletionRepository.deleteByRemoteIds(any()));
+      verifyNever(() => mockRemoteAssetRepository.trash(any()));
+    });
+
+    test('drops intents the server rejects permanently and keeps flushing the rest', () async {
+      when(() => mockLocalDeletionRepository.getPending(any())).thenAnswer((_) async => ['remote-dead', 'remote-2']);
+      when(() => mockAssetApiRepository.delete(any(), any())).thenAnswer((invocation) async {
+        final ids = invocation.positionalArguments.first as List<String>;
+        if (ids.length > 1 || ids.single == 'remote-dead') {
+          throw ApiException(400, 'Not found or no asset.delete access');
+        }
+      });
+      when(() => mockRemoteAssetRepository.trash(any())).thenAnswer((_) async {});
+
+      await sut.flushPendingDeletions('owner-1');
+
+      verify(() => mockLocalDeletionRepository.deleteByRemoteIds(['remote-dead'])).called(1);
+      verify(() => mockRemoteAssetRepository.trash(['remote-2'])).called(1);
+      verify(() => mockLocalDeletionRepository.deleteByRemoteIds(['remote-2'])).called(1);
+      verifyNever(() => mockRemoteAssetRepository.trash(['remote-dead']));
+    });
+
+    test('flushes large queues in chunks', () async {
+      final pending = [for (int i = 0; i < 1001; i++) 'remote-$i'];
+      when(() => mockLocalDeletionRepository.getPending(any())).thenAnswer((_) async => pending);
+      when(() => mockAssetApiRepository.delete(any(), any())).thenAnswer((_) async {});
+      when(() => mockRemoteAssetRepository.trash(any())).thenAnswer((_) async {});
+
+      await sut.flushPendingDeletions('owner-1');
+
+      final calls = verify(() => mockAssetApiRepository.delete(captureAny(), false)).captured;
+      expect(calls.length, 2);
+      expect((calls[0] as List<String>).length, 1000);
+      expect((calls[1] as List<String>).length, 1);
+    });
+  });
+
+  group('LocalSyncService - delta path', () {
+    void stubDeltaSync(List<String> deletes) {
+      when(() => mockNativeSyncApi.getMediaChanges()).thenAnswer(
+        (_) async => SyncDelta(hasChanges: true, updates: const [], deletes: deletes, assetAlbums: const {}),
+      );
+      when(() => mockNativeSyncApi.getAlbums()).thenAnswer((_) async => const []);
+      when(() => mockLocalAlbumRepository.updateAll(any())).thenAnswer((_) async {});
+      when(
+        () => mockLocalAlbumRepository.processDelta(
+          updates: any(named: 'updates'),
+          deletes: any(named: 'deletes'),
+          assetAlbums: any(named: 'assetAlbums'),
+        ),
+      ).thenAnswer((_) async {});
+      when(() => mockLocalAlbumRepository.getAll()).thenAnswer((_) async => const []);
+      when(() => mockNativeSyncApi.checkpointSync()).thenAnswer((_) async {});
+    }
+
+    test('does nothing when the feature is disabled', () async {
+      stubDeltaSync(const ['local-1']);
+
+      await sut.sync();
+
+      verifyNever(() => mockLocalDeletionRepository.getExcluded(any()));
+      verifyNever(() => mockLocalDeletionRepository.getBackedUp(any(), any()));
+      verifyNever(() => mockAssetApiRepository.delete(any(), any()));
+      verifyNever(() => mockLocalDeletionRepository.getPending(any()));
+    });
+
+    test('does nothing when there is no authenticated user even if enabled', () async {
+      await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletions, true);
+      await Store.delete(StoreKey.currentUser);
+      stubDeltaSync(const ['local-1']);
+
+      await sut.sync();
+
+      verifyNever(() => mockLocalDeletionRepository.getBackedUp(any(), any()));
+      verifyNever(() => mockAssetApiRepository.delete(any(), any()));
+    });
+
+    test('does nothing when photo access is limited even if enabled', () async {
+      await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletions, true);
+      when(() => mockDevicePermissionService.galleryStatus()).thenAnswer((_) async => DevicePermissionStatus.limited);
+      stubDeltaSync(const ['local-1']);
+
+      await sut.sync();
+
+      verifyNever(() => mockLocalDeletionRepository.getBackedUp(any(), any()));
+      verifyNever(() => mockLocalDeletionRepository.getPending(any()));
+      verifyNever(() => mockAssetApiRepository.delete(any(), any()));
+    });
+
+    test('defers the flush when the delta introduced new unhashed assets', () async {
+      await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletions, true);
+
+      stubDeltaSync(const ['local-1']);
+      when(
+        () => mockLocalDeletionRepository.getBackedUp(any(), any()),
+      ).thenAnswer((_) async => {'remote-1': 'checksum-1'});
+      // A moved file surfaces as delete + insert: The new row is unhashed.
+      var unhashedCalls = 0;
+      when(() => mockLocalAssetRepository.getUnhashedCount()).thenAnswer((_) async => unhashedCalls++ == 0 ? 0 : 1);
+
+      await sut.sync();
+
+      // The intent is recorded but not flushed until the hash service caught up.
+      verify(() => mockLocalDeletionRepository.upsert(UserStub.admin.id, {'remote-1': 'checksum-1'})).called(1);
+      verifyNever(() => mockLocalDeletionRepository.getPending(any()));
+      verifyNever(() => mockAssetApiRepository.delete(any(), any()));
+    });
+
+    test('records deletions before processDelta removes the rows, then flushes', () async {
+      await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletions, true);
+
+      stubDeltaSync(const ['local-1']);
+      when(
+        () => mockLocalDeletionRepository.getBackedUp(any(), any()),
+      ).thenAnswer((_) async => {'remote-1': 'checksum-1'});
+      when(() => mockLocalDeletionRepository.getPending(any())).thenAnswer((_) async => ['remote-1']);
+      when(() => mockAssetApiRepository.delete(any(), any())).thenAnswer((_) async {});
+      when(() => mockRemoteAssetRepository.trash(any())).thenAnswer((_) async {});
+
+      await sut.sync();
+
+      verifyInOrder([
+        () => mockLocalDeletionRepository.getBackedUp(UserStub.admin.id, ['local-1']),
+        () => mockLocalDeletionRepository.upsert(UserStub.admin.id, {'remote-1': 'checksum-1'}),
+        () => mockLocalAlbumRepository.processDelta(
+          updates: any(named: 'updates'),
+          deletes: any(named: 'deletes'),
+          assetAlbums: any(named: 'assetAlbums'),
+        ),
+        () => mockLocalDeletionRepository.unmarkExcluded(any()),
+        () => mockLocalDeletionRepository.getPending(UserStub.admin.id),
+        () => mockAssetApiRepository.delete(['remote-1'], false),
+        () => mockRemoteAssetRepository.trash(['remote-1']),
+        () => mockLocalDeletionRepository.deleteByRemoteIds(['remote-1']),
+      ]);
+    });
+  });
+
+  group('LocalSyncService - full sync path', () {
+    void stubFullSync() {
+      when(() => mockNativeSyncApi.getAlbums()).thenAnswer((_) async => const []);
+      when(
+        () => mockLocalAlbumRepository.getAll(sortBy: const {SortLocalAlbumsBy.id}),
+      ).thenAnswer((_) async => const []);
+      when(() => mockNativeSyncApi.checkpointSync()).thenAnswer((_) async {});
+    }
+
+    test('snapshots before reconciliation, then queues and flushes deletions', () async {
+      await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletions, true);
+
+      stubFullSync();
+      when(() => mockLocalDeletionRepository.getPending(any())).thenAnswer((_) async => ['remote-1']);
+      when(() => mockAssetApiRepository.delete(any(), any())).thenAnswer((_) async {});
+      when(() => mockRemoteAssetRepository.trash(any())).thenAnswer((_) async {});
+
+      await sut.fullSync();
+
+      verifyInOrder([
+        () => mockLocalDeletionRepository.snapshotBackedUpAssets(UserStub.admin.id),
+        () => mockNativeSyncApi.getAlbums(),
+        () => mockLocalDeletionRepository.queueDeletionsFromSnapshot(UserStub.admin.id),
+        () => mockLocalDeletionRepository.getPending(UserStub.admin.id),
+        () => mockAssetApiRepository.delete(['remote-1'], false),
+        () => mockNativeSyncApi.checkpointSync(),
+      ]);
+    });
+
+    test('skips snapshot and detection when the feature is disabled', () async {
+      stubFullSync();
+
+      await sut.fullSync();
+
+      verifyNever(() => mockLocalDeletionRepository.snapshotBackedUpAssets(any()));
+      verifyNever(() => mockLocalDeletionRepository.queueDeletionsFromSnapshot(any()));
+      verifyNever(() => mockLocalDeletionRepository.getPending(any()));
+    });
+
+    test('skips snapshot and detection when photo access is limited', () async {
+      await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletions, true);
+      when(() => mockDevicePermissionService.galleryStatus()).thenAnswer((_) async => DevicePermissionStatus.limited);
+      stubFullSync();
+
+      await sut.fullSync();
+
+      verifyNever(() => mockLocalDeletionRepository.snapshotBackedUpAssets(any()));
+      verifyNever(() => mockLocalDeletionRepository.queueDeletionsFromSnapshot(any()));
+      verifyNever(() => mockAssetApiRepository.delete(any(), any()));
+    });
+
+    test('still queues detected deletions when cancelled, but does not flush', () async {
+      await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletions, true);
+
+      final cancellation = Completer<void>()..complete();
+      when(() => mockNativeSyncApi.cancelSync()).thenAnswer((_) async {});
+      final cancelledSut = LocalSyncService(
+        localAlbumRepository: mockLocalAlbumRepository,
+        localAssetRepository: mockLocalAssetRepository,
+        trashedLocalAssetRepository: mockTrashedLocalAssetRepository,
+        assetMediaRepository: mockAssetMediaRepository,
+        permissionRepository: mockPermissionRepository,
+        devicePermissionService: mockDevicePermissionService,
+        assetApiRepository: mockAssetApiRepository,
+        remoteAssetRepository: mockRemoteAssetRepository,
+        localDeletionRepository: mockLocalDeletionRepository,
+        nativeSyncApi: mockNativeSyncApi,
+        cancellation: cancellation,
+      );
+
+      stubFullSync();
+
+      await cancelledSut.fullSync();
+
+      // The detected deletions are persisted for the next run. Only the server flush is skipped.
+      verify(() => mockLocalDeletionRepository.snapshotBackedUpAssets(UserStub.admin.id)).called(1);
+      verify(() => mockLocalDeletionRepository.queueDeletionsFromSnapshot(UserStub.admin.id)).called(1);
+      verifyNever(() => mockLocalDeletionRepository.getPending(any()));
+      verifyNever(() => mockAssetApiRepository.delete(any(), any()));
     });
   });
 

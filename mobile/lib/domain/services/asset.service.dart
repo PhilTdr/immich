@@ -7,8 +7,10 @@ import 'package:immich_mobile/domain/models/tag.model.dart';
 import 'package:immich_mobile/entities/store.entity.dart';
 import 'package:immich_mobile/extensions/platform_extensions.dart';
 import 'package:immich_mobile/infrastructure/repositories/local_asset.repository.dart';
+import 'package:immich_mobile/infrastructure/repositories/local_deletion.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/remote_asset.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/remote_exif.repository.dart';
+import 'package:immich_mobile/infrastructure/repositories/settings.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/trashed_local_asset.repository.dart';
 import 'package:immich_mobile/repositories/asset_api.repository.dart';
 import 'package:immich_mobile/repositories/asset_media.repository.dart';
@@ -22,6 +24,7 @@ class AssetService {
   final AssetApiRepository _apiRepository;
   final AssetMediaRepository _mediaRepository;
   final TrashedLocalAssetRepository _trashedLocalRepository;
+  final LocalDeletionRepository _localDeletionRepository;
 
   const AssetService({
     required this._remoteRepository,
@@ -30,6 +33,7 @@ class AssetService {
     required this._apiRepository,
     required this._mediaRepository,
     required this._trashedLocalRepository,
+    required this._localDeletionRepository,
   });
 
   Future<BaseAsset?> getAsset(BaseAsset asset) {
@@ -182,7 +186,19 @@ class AssetService {
       return 0;
     }
 
-    final deletedIds = await _mediaRepository.deleteAll(localIds, trash: trash);
+    // These deletions keep the remote copy. The deletion sync must skip them.
+    final exclude = SettingsRepository.instance.appConfig.backup.syncLocalDeletions;
+    if (exclude) {
+      await _localDeletionRepository.markExcluded(localIds);
+    }
+    var deletedIds = const <String>[];
+    try {
+      deletedIds = await _mediaRepository.deleteAll(localIds, trash: trash);
+    } finally {
+      if (exclude && deletedIds.length != localIds.length) {
+        await _localDeletionRepository.unmarkExcluded(localIds.toSet().difference(deletedIds.toSet()));
+      }
+    }
     if (deletedIds.isEmpty) {
       return 0;
     }

@@ -11,6 +11,8 @@ import 'package:immich_mobile/extensions/platform_extensions.dart';
 import 'package:immich_mobile/generated/translations.g.dart';
 import 'package:immich_mobile/providers/background_sync.provider.dart';
 import 'package:immich_mobile/providers/backup/backup_album.provider.dart';
+import 'package:immich_mobile/providers/gallery_permission.provider.dart';
+import 'package:immich_mobile/providers/infrastructure/db.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/platform.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/settings.provider.dart';
 import 'package:immich_mobile/providers/user.provider.dart';
@@ -35,6 +37,9 @@ class BackupSettings extends StatelessWidget {
         const Divider(),
         SettingGroupTitle(title: context.t.backup_albums_sync, icon: Icons.sync),
         const _AlbumSyncActionButton(),
+        const Divider(),
+        SettingGroupTitle(title: context.t.sync_deletions, icon: Icons.auto_delete_outlined),
+        const _SyncLocalDeletionsButton(),
       ],
     );
   }
@@ -151,6 +156,7 @@ class _BackupSwitchTile extends ConsumerWidget {
   final bool Function(AppConfig) selector;
   final String title;
   final String subtitle;
+  final bool enabled;
   final void Function(bool)? onChanged;
 
   const _BackupSwitchTile({
@@ -158,6 +164,7 @@ class _BackupSwitchTile extends ConsumerWidget {
     required this.selector,
     required this.title,
     required this.subtitle,
+    this.enabled = true,
     this.onChanged,
   });
 
@@ -171,10 +178,12 @@ class _BackupSwitchTile extends ConsumerWidget {
         subtitle: subtitle,
         trailing: Switch(
           value: value,
-          onChanged: (bool newValue) async {
-            await ref.read(settingsProvider).write(metadataKey, newValue);
-            onChanged?.call(newValue);
-          },
+          onChanged: !enabled
+              ? null
+              : (bool newValue) async {
+                  await ref.read(settingsProvider).write(metadataKey, newValue);
+                  onChanged?.call(newValue);
+                },
         ),
       ),
     );
@@ -283,6 +292,30 @@ class _BackupDelaySlider extends ConsumerWidget {
           label: formatBackupDelaySliderValue(context, currentValue),
         ),
       ],
+    );
+  }
+}
+
+class _SyncLocalDeletionsButton extends ConsumerWidget {
+  const _SyncLocalDeletionsButton();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final deletionRepository = ref.watch(driftProvider).localDeletionRepository;
+    final hasFullAccess = ref.watch(galleryPermissionNotifier) == .granted;
+    return _BackupSwitchTile(
+      metadataKey: SettingsKey.backupSyncLocalDeletions,
+      selector: (c) => c.backup.syncLocalDeletions,
+      title: context.t.sync_local_deletions_setting_title,
+      subtitle: hasFullAccess
+          ? context.t.sync_local_deletions_setting_description
+          : context.t.sync_local_deletions_setting_description_without_permission,
+      enabled: hasFullAccess,
+      onChanged: (enabled) {
+        if (!enabled) {
+          unawaited(deletionRepository.deleteAll());
+        }
+      },
     );
   }
 }
