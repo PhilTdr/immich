@@ -18,6 +18,7 @@ import 'package:immich_mobile/platform/native_sync_api.g.dart';
 import 'package:immich_mobile/repositories/asset_api.repository.dart';
 import 'package:immich_mobile/repositories/asset_media.repository.dart';
 import 'package:immich_mobile/repositories/permission.repository.dart';
+import 'package:immich_mobile/services/server_info.service.dart';
 import 'package:immich_mobile/utils/datetime_helpers.dart';
 import 'package:immich_mobile/utils/diff.dart';
 import 'package:logging/logging.dart';
@@ -36,6 +37,7 @@ class LocalSyncService {
   final AssetApiRepository _assetApiRepository;
   final RemoteAssetRepository _remoteAssetRepository;
   final DriftLocalDeletionRepository _localDeletionRepository;
+  final ServerInfoService _serverInfoService;
   final Completer<void>? _cancellation;
   final Logger _log = Logger("DeviceSyncService");
 
@@ -49,6 +51,7 @@ class LocalSyncService {
     required this._assetApiRepository,
     required this._remoteAssetRepository,
     required this._localDeletionRepository,
+    required this._serverInfoService,
     this._cancellation,
   }) {
     _cancellation?.future.then((_) => _nativeSyncApi.cancelSync().onError(_log.warning));
@@ -497,6 +500,21 @@ class LocalSyncService {
         if (!present.contains(e.checksum)) e.remoteId,
     ];
     if (remoteIds.isEmpty) {
+      return;
+    }
+
+    // A move-to-trash is a permanent delete when the server has trash disabled.
+    // Confirm the feature before touching remote assets and keep the queue for a
+    // later retry when the check fails or trash is off.
+    final features = await _serverInfoService.getServerFeatures();
+    if (features == null) {
+      _log.warning("Cannot confirm the server trash feature. Skipping the deletion flush, will retry next sync");
+      return;
+    }
+    if (!features.trash) {
+      _log.warning(
+        "Server trash is disabled. Keeping ${remoteIds.length} pending deletions to avoid permanent deletion",
+      );
       return;
     }
 
