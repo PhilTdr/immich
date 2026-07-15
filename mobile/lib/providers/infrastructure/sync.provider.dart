@@ -11,6 +11,7 @@ import 'package:immich_mobile/providers/infrastructure/platform.provider.dart';
 import 'package:immich_mobile/repositories/asset_api.repository.dart';
 import 'package:immich_mobile/repositories/asset_media.repository.dart';
 import 'package:immich_mobile/repositories/permission.repository.dart';
+import 'package:immich_mobile/services/server_info.service.dart';
 
 final syncStreamServiceProvider = Provider((ref) {
   final db = ref.watch(driftProvider);
@@ -42,6 +43,7 @@ final localSyncServiceProvider = Provider((ref) {
     remoteAssetRepository: db.remoteAssetRepository,
     localDeletionRepository: db.localDeletionRepository,
     nativeSyncApi: ref.watch(nativeSyncApiProvider),
+    serverInfoService: ref.watch(serverInfoServiceProvider),
     cancellation: ref.watch(cancellationProvider),
   );
 });

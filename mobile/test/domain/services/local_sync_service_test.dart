@@ -17,6 +17,7 @@ import 'package:immich_mobile/infrastructure/repositories/local_album.repository
 import 'package:immich_mobile/infrastructure/repositories/settings.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/store.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/trashed_local_asset.repository.dart';
+import 'package:immich_mobile/models/server_info/server_features.model.dart';
 import 'package:immich_mobile/platform/native_sync_api.g.dart';
 import 'package:immich_mobile/repositories/asset_media.repository.dart';
 import 'package:mocktail/mocktail.dart';
@@ -40,6 +41,7 @@ void main() {
   late MockRemoteAssetRepository mockRemoteAssetRepository;
   late MockLocalDeletionRepository mockLocalDeletionRepository;
   late MockNativeSyncApi mockNativeSyncApi;
+  late MockServerInfoService mockServerInfoService;
   late Drift db;
 
   setUpAll(() async {
@@ -68,6 +70,7 @@ void main() {
     mockRemoteAssetRepository = MockRemoteAssetRepository();
     mockLocalDeletionRepository = MockLocalDeletionRepository();
     mockNativeSyncApi = MockNativeSyncApi();
+    mockServerInfoService = MockServerInfoService();
 
     when(() => mockNativeSyncApi.shouldFullSync()).thenAnswer((_) async => false);
     when(() => mockNativeSyncApi.getMediaChanges()).thenAnswer(
@@ -95,7 +98,12 @@ void main() {
       remoteAssetRepository: mockRemoteAssetRepository,
       localDeletionRepository: mockLocalDeletionRepository,
       nativeSyncApi: mockNativeSyncApi,
+      serverInfoService: mockServerInfoService,
     );
+
+    when(
+      () => mockServerInfoService.getServerFeatures(),
+    ).thenAnswer((_) async => const ServerFeatures(trash: true, map: false, oauthEnabled: false, passwordLogin: true));
 
     await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletions, false);
     await Store.put(StoreKey.currentUser, UserStub.admin);
@@ -350,6 +358,32 @@ void main() {
       verifyNever(() => mockRemoteAssetRepository.trash(['remote-dead']));
     });
 
+    test('skips the flush and keeps the queue when the server has trash disabled', () async {
+      when(() => mockLocalDeletionRepository.getPending(any())).thenAnswer((_) async => ['remote-1']);
+      when(() => mockServerInfoService.getServerFeatures()).thenAnswer(
+        (_) async => const ServerFeatures(trash: false, map: false, oauthEnabled: false, passwordLogin: true),
+      );
+
+      await sut.flushPendingDeletions('owner-1');
+
+      // A move-to-trash would be a permanent delete, so nothing is sent and the
+      // queue survives for a retry once trash is enabled again.
+      verifyNever(() => mockAssetApiRepository.delete(any(), any()));
+      verifyNever(() => mockRemoteAssetRepository.trash(any()));
+      verifyNever(() => mockLocalDeletionRepository.deleteByRemoteIds(any()));
+    });
+
+    test('skips the flush and keeps the queue when server features cannot be fetched', () async {
+      when(() => mockLocalDeletionRepository.getPending(any())).thenAnswer((_) async => ['remote-1']);
+      when(() => mockServerInfoService.getServerFeatures()).thenAnswer((_) async => null);
+
+      await sut.flushPendingDeletions('owner-1');
+
+      verifyNever(() => mockAssetApiRepository.delete(any(), any()));
+      verifyNever(() => mockRemoteAssetRepository.trash(any()));
+      verifyNever(() => mockLocalDeletionRepository.deleteByRemoteIds(any()));
+    });
+
     test('flushes large queues in chunks', () async {
       final pending = [for (int i = 0; i < 1001; i++) 'remote-$i'];
       when(() => mockLocalDeletionRepository.getPending(any())).thenAnswer((_) async => pending);
@@ -533,6 +567,7 @@ void main() {
         remoteAssetRepository: mockRemoteAssetRepository,
         localDeletionRepository: mockLocalDeletionRepository,
         nativeSyncApi: mockNativeSyncApi,
+        serverInfoService: mockServerInfoService,
         cancellation: cancellation,
       );
 
