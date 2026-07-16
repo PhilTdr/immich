@@ -100,6 +100,9 @@ open class NativeSyncApiImplBase(context: Context) : ImmichPlugin(), ActivityAwa
 
     const val HASH_BUFFER_SIZE = 2 * 1024 * 1024
 
+    // Keep IN clauses below SQLite's default bound-variable limit (999).
+    private const val SQLITE_MAX_VARIABLE_NUMBER = 900
+
     // _special_format: added in API level 37, also in S Extensions 21+
     // https://developer.android.com/reference/android/provider/MediaStore.Files.FileColumns#SPECIAL_FORMAT
     private fun hasSpecialFormatColumn(): Boolean =
@@ -548,5 +551,29 @@ open class NativeSyncApiImplBase(context: Context) : ImmichPlugin(), ActivityAwa
   @Suppress("unused", "UNUSED_PARAMETER")
   fun getCloudIdForAssetIds(assetIds: List<String>): List<CloudIdResult> {
     return emptyList()
+  }
+
+  fun getExistingAssetIds(assetIds: List<String>): List<String> {
+    if (assetIds.isEmpty()) {
+      return emptyList()
+    }
+
+    val existing = mutableListOf<String>()
+    for (chunk in assetIds.chunked(SQLITE_MAX_VARIABLE_NUMBER)) {
+      val placeholders = chunk.joinToString(",") { "?" }
+      val cursor = getCursor(
+        MediaStore.VOLUME_EXTERNAL,
+        "${MediaStore.MediaColumns._ID} IN ($placeholders)",
+        chunk.toTypedArray(),
+        arrayOf(MediaStore.MediaColumns._ID)
+      ) ?: error("MediaStore asset existence query failed")
+      cursor.use {
+        val idColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+        while (cursor.moveToNext()) {
+          existing.add(cursor.getLong(idColumn).toString())
+        }
+      }
+    }
+    return existing
   }
 }

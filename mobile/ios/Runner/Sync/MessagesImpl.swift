@@ -500,4 +500,19 @@ class NativeSyncApiImpl: ImmichPlugin, NativeSyncApi, FlutterPlugin {
     }
     return mappings;
   }
+
+  func getExistingAssetIds(assetIds: [String]) throws -> [String] {
+    guard !assetIds.isEmpty else {
+      return []
+    }
+
+    let options = PHFetchOptions()
+    options.includeHiddenAssets = true
+    var existing: [String] = []
+    let result = PHAsset.fetchAssets(withLocalIdentifiers: assetIds, options: options)
+    result.enumerateObjects { (asset, _, _) in
+      existing.append(asset.localIdentifier)
+    }
+    return existing
+  }
 }

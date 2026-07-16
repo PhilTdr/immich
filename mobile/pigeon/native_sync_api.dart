@@ -156,4 +156,8 @@ abstract class NativeSyncApi {
 
   @TaskQueue(type: TaskQueueType.serialBackgroundThread)
   List<CloudIdResult> getCloudIdForAssetIds(List<String> assetIds);
+
+  // The ids that still exist on the device, including hidden assets
+  @TaskQueue(type: TaskQueueType.serialBackgroundThread)
+  List<String> getExistingAssetIds(List<String> assetIds);
 }
