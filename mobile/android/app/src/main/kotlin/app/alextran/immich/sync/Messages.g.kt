@@ -556,6 +556,7 @@ interface NativeSyncApi {
   fun getTrashedAssets(): Map<String, List<PlatformAsset>>
   fun restoreFromTrashById(mediaId: String, type: Long, callback: (Result<Boolean>) -> Unit)
   fun getCloudIdForAssetIds(assetIds: List<String>): List<CloudIdResult>
+  fun getExistingAssetIds(assetIds: List<String>): List<String>
 
   companion object {
     /** The codec used by NativeSyncApi. */
@@ -809,6 +810,23 @@ interface NativeSyncApi {
             val assetIdsArg = args[0] as List<String>
             val wrapped: List<Any?> = try {
               listOf(api.getCloudIdForAssetIds(assetIdsArg))
+            } catch (exception: Throwable) {
+              MessagesPigeonUtils.wrapError(exception)
+            }
+            reply.reply(wrapped)
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.immich_mobile.NativeSyncApi.getExistingAssetIds$separatedMessageChannelSuffix", codec, taskQueue)
+        if (api != null) {
+          channel.setMessageHandler { message, reply ->
+            val args = message as List<Any?>
+            val assetIdsArg = args[0] as List<String>
+            val wrapped: List<Any?> = try {
+              listOf(api.getExistingAssetIds(assetIdsArg))
             } catch (exception: Throwable) {
               MessagesPigeonUtils.wrapError(exception)
             }

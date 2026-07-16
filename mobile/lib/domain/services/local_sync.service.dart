@@ -26,6 +26,10 @@ import 'package:openapi/api.dart' show ApiException;
 
 const String _kSyncCancelledCode = "SYNC_CANCELLED";
 const int _kDeletionFlushChunkSize = 1000;
+// A full sync that finds almost every backed-up asset gone is treated as a
+// device state change (volume ejected, access revoked), not as deletions.
+const int _kDeletionGuardMinAssets = 50;
+const double _kDeletionGuardMaxVanishedRatio = 0.9;
 
 class LocalSyncService {
   final DriftLocalAlbumRepository _localAlbumRepository;
@@ -182,7 +186,7 @@ class LocalSyncService {
       );
 
       if (ownerId != null) {
-        await _localDeletionRepository.queueDeletionsFromSnapshot(ownerId);
+        await _detectAndQueueDeletionsFromSnapshot(ownerId);
         await _flushUnlessDeferred(ownerId, unhashedBefore);
       }
 
@@ -435,6 +439,41 @@ class LocalSyncService {
       return null;
     }
     return _currentUserId;
+  }
+
+  /// Detects deletions from the pre-reconciliation snapshot, re-verifying each
+  /// candidate against the device before queuing so hidden or moved assets that
+  /// merely lost their local row are not mistaken for deletions.
+  Future<void> _detectAndQueueDeletionsFromSnapshot(String ownerId) async {
+    final result = await _localDeletionRepository.getSnapshotDeletionCandidates();
+    try {
+      final candidates = result.candidates;
+      if (candidates.isEmpty) {
+        return;
+      }
+
+      // Hidden assets and preserved-id moves also drop the local row. Keep
+      // whatever the platform still reports as present on the device.
+      final present = (await _nativeSyncApi.getExistingAssetIds(candidates.map((c) => c.localId).toList())).toSet();
+      final gone = [
+        for (final c in candidates)
+          if (!present.contains(c.localId)) c,
+      ];
+      if (gone.isEmpty) {
+        return;
+      }
+
+      // A near-total wipe is a device state change (ejected volume, revoked
+      // access), not deletions. Skip it and re-evaluate on the next full sync.
+      if (result.total >= _kDeletionGuardMinAssets && gone.length > result.total * _kDeletionGuardMaxVanishedRatio) {
+        _log.warning("Skipping deletion sync: ${gone.length} of ${result.total} backed-up assets vanished at once");
+        return;
+      }
+
+      await _localDeletionRepository.upsert(ownerId, {for (final c in gone) c.remoteId: c.checksum});
+    } finally {
+      await _localDeletionRepository.clearSnapshotAndConsumeExclusions();
+    }
   }
 
   Future<void> _flushUnlessDeferred(String ownerId, int unhashedBefore) async {

@@ -110,21 +110,37 @@ class DriftLocalDeletionRepository extends DriftDatabaseRepository {
     });
   }
 
-  /// Queues snapshot whose local asset is gone and cleans up exclusions of
-  /// assets that no longer exist.
-  Future<void> queueDeletionsFromSnapshot(String ownerId) {
+  /// Returns the snapshot rows whose local asset is gone and that are not
+  /// excluded, along with the total snapshot size so the caller can detect a
+  /// whole volume disappearing before queuing anything.
+  Future<({List<({String localId, String remoteId, String checksum})> candidates, int total})>
+  getSnapshotDeletionCandidates() {
     return _db.transaction(() async {
       await _createSnapshotTable();
-      await _db.customStatement(
-        '''
-        INSERT OR REPLACE INTO local_deletion_entity (remote_id, checksum, owner_id)
-        SELECT s.remote_id, s.checksum, ?
+      final rows = await _db.customSelect('''
+        SELECT s.local_id AS local_id, s.remote_id AS remote_id, s.checksum AS checksum
         FROM local_deletion_snapshot s
         WHERE NOT EXISTS (SELECT 1 FROM local_asset_entity la WHERE la.id = s.local_id)
           AND NOT EXISTS (SELECT 1 FROM local_deletion_exclusion_entity ex WHERE ex.local_id = s.local_id)
-      ''',
-        [ownerId],
-      );
+      ''').get();
+      final total = await _db.customSelect('SELECT COUNT(*) AS c FROM local_deletion_snapshot').getSingle();
+      final candidates = rows
+          .map(
+            (r) => (
+              localId: r.read<String>('local_id'),
+              remoteId: r.read<String>('remote_id'),
+              checksum: r.read<String>('checksum'),
+            ),
+          )
+          .toList();
+      return (candidates: candidates, total: total.read<int>('c'));
+    });
+  }
+
+  /// Consumes exclusions of assets that no longer exist and clears the snapshot.
+  Future<void> clearSnapshotAndConsumeExclusions() {
+    return _db.transaction(() async {
+      await _createSnapshotTable();
       await _db.customStatement(
         'DELETE FROM local_deletion_exclusion_entity WHERE local_id NOT IN (SELECT id FROM local_asset_entity)',
       );

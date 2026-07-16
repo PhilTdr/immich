@@ -103,37 +103,40 @@ void main() {
   });
 
   group('snapshot deletion detection', () {
-    test('queues assets that disappeared between snapshot and detection', () async {
+    test('returns candidates for assets that disappeared between snapshot and detection', () async {
       final remote = await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1');
       final local = await ctx.newLocalAsset(checksum: 'checksum-1');
 
       await sut.snapshotBackedUpAssets(userId);
       await ctx.db.managers.localAssetEntity.filter((r) => r.id.equals(local.id)).delete();
-      await sut.queueDeletionsFromSnapshot(userId);
+      final result = await sut.getSnapshotDeletionCandidates();
 
-      expect(await queuedChecksums(), {remote.id: 'checksum-1'});
+      expect(result.total, 1);
+      expect(result.candidates, [(localId: local.id, remoteId: remote.id, checksum: 'checksum-1')]);
     });
 
-    test('does not queue assets that survived the reconciliation', () async {
+    test('omits assets that survived the reconciliation', () async {
       await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1');
       await ctx.newLocalAsset(checksum: 'checksum-1');
 
       await sut.snapshotBackedUpAssets(userId);
-      await sut.queueDeletionsFromSnapshot(userId);
+      final result = await sut.getSnapshotDeletionCandidates();
 
-      expect(await queuedRemoteIds(), isEmpty);
+      expect(result.candidates, isEmpty);
+      expect(result.total, 1);
     });
 
-    test('skips excluded assets and consumes the exclusion once the row is gone', () async {
+    test('omits excluded assets and consumes the exclusion once the row is gone', () async {
       await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1');
       final local = await ctx.newLocalAsset(checksum: 'checksum-1');
       await sut.markExcluded([local.id]);
 
       await sut.snapshotBackedUpAssets(userId);
       await ctx.db.managers.localAssetEntity.filter((r) => r.id.equals(local.id)).delete();
-      await sut.queueDeletionsFromSnapshot(userId);
+      final result = await sut.getSnapshotDeletionCandidates();
+      await sut.clearSnapshotAndConsumeExclusions();
 
-      expect(await queuedRemoteIds(), isEmpty);
+      expect(result.candidates, isEmpty);
       expect(await excludedLocalIds(), isEmpty);
     });
 
@@ -142,7 +145,7 @@ void main() {
       await sut.markExcluded([local.id]);
 
       await sut.snapshotBackedUpAssets(userId);
-      await sut.queueDeletionsFromSnapshot(userId);
+      await sut.clearSnapshotAndConsumeExclusions();
 
       expect(await excludedLocalIds(), {local.id});
     });
@@ -162,17 +165,18 @@ void main() {
       for (final local in locals) {
         await ctx.db.managers.localAssetEntity.filter((r) => r.id.equals(local.id)).delete();
       }
-      await sut.queueDeletionsFromSnapshot(userId);
+      final result = await sut.getSnapshotDeletionCandidates();
 
-      expect(await queuedRemoteIds(), isEmpty);
+      expect(result.candidates, isEmpty);
     });
 
-    test('detection without a prior snapshot queues nothing', () async {
+    test('detection without a prior snapshot returns nothing', () async {
       await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1');
 
-      await sut.queueDeletionsFromSnapshot(userId);
+      final result = await sut.getSnapshotDeletionCandidates();
 
-      expect(await queuedRemoteIds(), isEmpty);
+      expect(result.candidates, isEmpty);
+      expect(result.total, 0);
     });
   });
 

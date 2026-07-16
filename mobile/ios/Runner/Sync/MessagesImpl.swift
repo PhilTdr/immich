@@ -453,6 +453,23 @@ class NativeSyncApiImpl: ImmichPlugin, NativeSyncApi, FlutterPlugin {
     }
   }
   
+  // Returns the ids among [assetIds] that still resolve to a PHAsset, including
+  // hidden assets, so a vanished local row is not mistaken for a deletion.
+  func getExistingAssetIds(assetIds: [String]) throws -> [String] {
+    guard !assetIds.isEmpty else {
+      return []
+    }
+
+    let options = PHFetchOptions()
+    options.includeHiddenAssets = true
+    var existing: [String] = []
+    let result = PHAsset.fetchAssets(withLocalIdentifiers: assetIds, options: options)
+    result.enumerateObjects { (asset, _, _) in
+      existing.append(asset.localIdentifier)
+    }
+    return existing
+  }
+
   func getCloudIdForAssetIds(assetIds: [String]) throws -> [CloudIdResult] {
     guard #available(iOS 16, *) else {
       return assetIds.map { CloudIdResult(assetId: $0) }
