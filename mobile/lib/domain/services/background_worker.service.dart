@@ -8,6 +8,7 @@ import 'package:immich_mobile/constants/constants.dart';
 import 'package:immich_mobile/data/data_controller.dart';
 import 'package:immich_mobile/data/store.dart';
 import 'package:immich_mobile/domain/services/hash.service.dart';
+import 'package:immich_mobile/domain/services/local_deletion_flush.service.dart';
 import 'package:immich_mobile/domain/services/local_sync.service.dart';
 import 'package:immich_mobile/domain/services/log.service.dart';
 import 'package:immich_mobile/domain/services/sync_stream.service.dart';
@@ -67,6 +68,7 @@ class BackgroundWorkerBgService extends BackgroundWorkerFlutterApi {
   late LocalSyncService _localSyncService;
   late SyncStreamService _remoteSyncService;
   late HashService _hashService;
+  late LocalDeletionFlushService _localDeletionFlushService;
 
   bool _isCleanedUp = false;
 
@@ -86,6 +88,7 @@ class BackgroundWorkerBgService extends BackgroundWorkerFlutterApi {
     _localSyncService = ref.read(localSyncServiceProvider);
     _remoteSyncService = ref.read(syncStreamServiceProvider);
     _hashService = ref.read(hashServiceProvider);
+    _localDeletionFlushService = ref.read(localDeletionFlushServiceProvider);
     BackgroundWorkerFlutterApi.setUp(this);
   }
 
@@ -174,6 +177,9 @@ class BackgroundWorkerBgService extends BackgroundWorkerFlutterApi {
       } else {
         await all;
       }
+
+      // Flush after hashing so restored/moved copies are recognised.
+      await _localDeletionFlushService.flush();
     } catch (error, stack) {
       _logger.severe("Failed to complete iOS background upload", error, stack);
     } finally {
@@ -334,6 +340,11 @@ class BackgroundWorkerBgService extends BackgroundWorkerFlutterApi {
     }
 
     await hashFuture;
+    if (_isCleanedUp) {
+      return isSuccess;
+    }
+
+    await _localDeletionFlushService.flush();
     return isSuccess;
   }
 }

@@ -100,10 +100,6 @@ class LocalAssetRepository extends DatabaseAccessor<Drift> with $LocalAssetRepos
     return _db.managers.localAssetEntity.filter((e) => e.checksum.isNull().not()).count();
   }
 
-  Future<int> getUnhashedCount() {
-    return _db.managers.localAssetEntity.filter((e) => e.checksum.isNull()).count();
-  }
-
   Future<List<LocalAlbum>> getSourceAlbums(String localAssetId, {BackupSelection? backupSelection}) {
     final query = _db.localAlbumEntity.select()
       ..where(

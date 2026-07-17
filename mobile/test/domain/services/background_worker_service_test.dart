@@ -12,6 +12,7 @@ import 'package:immich_mobile/data/db/main/database.dart';
 import 'package:immich_mobile/domain/models/settings_key.dart';
 import 'package:immich_mobile/domain/services/background_worker.service.dart';
 import 'package:immich_mobile/domain/services/hash.service.dart';
+import 'package:immich_mobile/domain/services/local_deletion_flush.service.dart';
 import 'package:immich_mobile/domain/services/local_sync.service.dart';
 import 'package:immich_mobile/domain/services/sync_stream.service.dart';
 import 'package:immich_mobile/infrastructure/repositories/settings.repository.dart';
@@ -32,10 +33,13 @@ class MockSyncStreamService extends Mock implements SyncStreamService {}
 
 class MockHashService extends Mock implements HashService {}
 
+class MockLocalDeletionFlushService extends Mock implements LocalDeletionFlushService {}
+
 void main() {
   late BackgroundWorkerBgService sut;
   late MockSyncStreamService mockRemoteSyncService;
   late MockBackgroundUploadService mockBackgroundUploadService;
+  late MockLocalDeletionFlushService mockLocalDeletionFlushService;
   late Drift db;
 
   setUpAll(() async {
@@ -55,12 +59,14 @@ void main() {
   setUp(() {
     final mockLocalSyncService = MockLocalSyncService();
     final mockHashService = MockHashService();
+    mockLocalDeletionFlushService = MockLocalDeletionFlushService();
     final mockUserService = MockUserService();
     mockRemoteSyncService = MockSyncStreamService();
     mockBackgroundUploadService = MockBackgroundUploadService();
 
     when(() => mockLocalSyncService.sync()).thenAnswer((_) async {});
     when(() => mockHashService.hashAssets()).thenAnswer((_) async {});
+    when(() => mockLocalDeletionFlushService.flush()).thenAnswer((_) async {});
     when(() => mockUserService.tryGetMyUser()).thenReturn(UserStub.admin);
     when(() => mockUserService.watchMyUser()).thenAnswer((_) => const Stream.empty());
     when(() => mockBackgroundUploadService.getActiveTasks(kBackupGroup)).thenAnswer((_) async => []);
@@ -74,6 +80,7 @@ void main() {
         localSyncServiceProvider.overrideWithValue(mockLocalSyncService),
         syncStreamServiceProvider.overrideWithValue(mockRemoteSyncService),
         hashServiceProvider.overrideWithValue(mockHashService),
+        localDeletionFlushServiceProvider.overrideWithValue(mockLocalDeletionFlushService),
         currentUserProvider.overrideWith((ref) => CurrentUserProvider(mockUserService)),
         foregroundUploadServiceProvider.overrideWithValue(MockForegroundUploadService()),
         backgroundUploadServiceProvider.overrideWithValue(mockBackgroundUploadService),
@@ -101,6 +108,14 @@ void main() {
       await sut.onIosUpload(true, 20);
 
       verifyNever(() => mockBackgroundUploadService.uploadBackupCandidates(any()));
+    });
+
+    test('flushes local deletions after the batch', () async {
+      when(() => mockRemoteSyncService.sync()).thenAnswer((_) async => true);
+
+      await sut.onIosUpload(true, 20);
+
+      verify(() => mockLocalDeletionFlushService.flush()).called(1);
     });
 
     test('does not list a new batch when the run times out before the remote sync finished', () {

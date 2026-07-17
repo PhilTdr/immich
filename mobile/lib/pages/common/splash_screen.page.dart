@@ -349,6 +349,10 @@ class SplashScreenPageState extends ConsumerState<SplashScreenPage> {
                   if (SettingsRepository.instance.appConfig.backup.syncAlbums) {
                     await backgroundManager.syncLinkedAlbum();
                   }
+
+                  if (SettingsRepository.instance.appConfig.backup.syncLocalDeletions) {
+                    await backgroundManager.flushLocalDeletions();
+                  }
                 } catch (e) {
                   log.severe('Failed establishing connection to the server: $e');
                 }

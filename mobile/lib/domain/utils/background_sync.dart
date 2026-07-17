@@ -34,6 +34,7 @@ class BackgroundSyncManager {
   Cancelable<void>? _deviceAlbumSyncTask;
   Cancelable<void>? _linkedAlbumSyncTask;
   Cancelable<void>? _hashTask;
+  Cancelable<void>? _localDeletionFlushTask;
 
   BackgroundSyncManager({
     this.onRemoteSyncStart,
@@ -54,7 +55,13 @@ class BackgroundSyncManager {
   // stays referenced but frozen, so on resume the dedupe guards would hand back the
   // stale task instead of syncing (#28082). Websocket and cloud-id are excluded - the
   // resume path never restarts them. [_allTasks] builds on this so the lists can't drift.
-  List<Cancelable?> get _resumeSyncTasks => [_syncTask, _deviceAlbumSyncTask, _hashTask, _linkedAlbumSyncTask];
+  List<Cancelable?> get _resumeSyncTasks => [
+    _syncTask,
+    _deviceAlbumSyncTask,
+    _hashTask,
+    _linkedAlbumSyncTask,
+    _localDeletionFlushTask,
+  ];
 
   List<Cancelable?> get _allTasks => [_syncWebsocketTask, _cloudIdSyncTask, ..._resumeSyncTasks];
 
@@ -67,6 +74,7 @@ class BackgroundSyncManager {
     _linkedAlbumSyncTask = null;
     _deviceAlbumSyncTask = null;
     _hashTask = null;
+    _localDeletionFlushTask = null;
     await _cancelAll(tasks);
   }
 
@@ -77,6 +85,7 @@ class BackgroundSyncManager {
     _deviceAlbumSyncTask = null;
     _hashTask = null;
     _linkedAlbumSyncTask = null;
+    _localDeletionFlushTask = null;
     await _cancelAll(tasks);
   }
 
@@ -252,6 +261,25 @@ class BackgroundSyncManager {
           }
         })
         // a cancelled resume sync is not a failure; absorb it so the websocket callers don't get an uncaught error
+        .catchError((_) {}, test: (error) => error is CanceledError);
+  }
+
+  Future<void> flushLocalDeletions() {
+    if (_localDeletionFlushTask != null) {
+      return _localDeletionFlushTask!.future.catchError((_) {}, test: (error) => error is CanceledError);
+    }
+
+    final task = _localDeletionFlushTask = runInIsolateGentle(
+      computation: (ref) => ref.read(localDeletionFlushServiceProvider).flush(),
+      debugLabel: 'local-deletion-flush',
+    );
+    return task
+        .whenComplete(() {
+          if (identical(_localDeletionFlushTask, task)) {
+            _localDeletionFlushTask = null;
+          }
+        })
+        // a cancelled resume sync is not a failure; absorb it so the callers don't get an uncaught error
         .catchError((_) {}, test: (error) => error is CanceledError);
   }
 

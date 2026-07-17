@@ -194,6 +194,10 @@ class LoginForm extends HookConsumerWidget {
       if (SettingsRepository.instance.appConfig.backup.syncAlbums) {
         await backgroundManager.syncLinkedAlbum();
       }
+
+      if (SettingsRepository.instance.appConfig.backup.syncLocalDeletions) {
+        await backgroundManager.flushLocalDeletions();
+      }
     }
 
     Future<void> getManageMediaPermission() async {
