@@ -33,6 +33,7 @@ class BackgroundSyncManager {
   Cancelable<void>? _deviceAlbumSyncTask;
   Cancelable<void>? _linkedAlbumSyncTask;
   Cancelable<void>? _hashTask;
+  Cancelable<void>? _localDeletionFlushTask;
 
   BackgroundSyncManager({
     this.onRemoteSyncStart,
@@ -57,6 +58,7 @@ class BackgroundSyncManager {
       _linkedAlbumSyncTask,
       _deviceAlbumSyncTask,
       _hashTask,
+      _localDeletionFlushTask,
     ];
     final futures = [
       for (final task in tasks)
@@ -71,6 +73,7 @@ class BackgroundSyncManager {
     _linkedAlbumSyncTask = null;
     _deviceAlbumSyncTask = null;
     _hashTask = null;
+    _localDeletionFlushTask = null;
 
     try {
       await Future.wait(futures);
@@ -208,6 +211,20 @@ class BackgroundSyncManager {
     _linkedAlbumSyncTask = runInIsolateGentle(computation: syncLinkedAlbumsIsolated, debugLabel: 'linked-album-sync');
     return _linkedAlbumSyncTask!.whenComplete(() {
       _linkedAlbumSyncTask = null;
+    });
+  }
+
+  Future<void> flushLocalDeletions() {
+    if (_localDeletionFlushTask != null) {
+      return _localDeletionFlushTask!.future;
+    }
+
+    _localDeletionFlushTask = runInIsolateGentle(
+      computation: (ref) => ref.read(localDeletionFlushServiceProvider).flush(),
+      debugLabel: 'local-deletion-flush',
+    );
+    return _localDeletionFlushTask!.whenComplete(() {
+      _localDeletionFlushTask = null;
     });
   }
 

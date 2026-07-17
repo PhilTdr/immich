@@ -133,6 +133,8 @@ class AppLifeCycleNotifier extends StateNotifier<AppLifeCycleEnum> {
       if (isAlbumLinkedSyncEnable) {
         await _safeRun(backgroundManager.syncLinkedAlbum(), "syncLinkedAlbum");
       }
+
+      await _safeRun(backgroundManager.flushLocalDeletions(), "flushLocalDeletions");
     } catch (e, stackTrace) {
       _log.severe("Error during background sync", e, stackTrace);
     }

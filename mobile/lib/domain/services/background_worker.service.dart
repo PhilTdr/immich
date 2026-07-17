@@ -141,6 +141,9 @@ class BackgroundWorkerBgService extends BackgroundWorkerFlutterApi {
       } else {
         await all;
       }
+
+      // Flush after hashing so restored/moved copies are recognised.
+      await sync.flushLocalDeletions();
     } catch (error, stack) {
       _logger.severe("Failed to complete iOS background upload", error, stack);
     } finally {
@@ -300,6 +303,11 @@ class BackgroundWorkerBgService extends BackgroundWorkerFlutterApi {
     }
 
     await hashFuture;
+    if (_isCleanedUp) {
+      return isSuccess;
+    }
+
+    await _ref?.read(backgroundSyncProvider).flushLocalDeletions();
     return isSuccess;
   }
 }
