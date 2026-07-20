@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:drift/drift.dart' as drift;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:immich_mobile/constants/constants.dart';
 import 'package:immich_mobile/constants/enums.dart';
 import 'package:immich_mobile/data/db/main/database.dart';
 import 'package:immich_mobile/domain/models/settings_key.dart';
@@ -54,7 +55,9 @@ void main() {
     when(() => devicePermissionService.galleryStatus()).thenAnswer((_) async => DevicePermissionStatus.granted);
     when(() => mocks.localDeletion.repo.pruneAlreadyTrashed()).thenAnswer((_) async {});
     when(() => mocks.localDeletion.repo.pruneRestored(any())).thenAnswer((_) async {});
-    when(() => mocks.localDeletion.repo.getPending(any())).thenAnswer((_) async => []);
+    when(
+      () => mocks.localDeletion.repo.getPending(any(), settledBefore: any(named: 'settledBefore')),
+    ).thenAnswer((_) async => []);
     when(() => mocks.localDeletion.repo.deleteByRemoteIds(any())).thenAnswer((_) async {});
     when(
       () => services.serverInfo.getServerFeatures(),
@@ -64,14 +67,16 @@ void main() {
   group('LocalDeletionFlushService', () {
     group('flushPendingDeletions', () {
       test('moves pending deletions to the server trash and clears their queue rows', () async {
-        when(() => mocks.localDeletion.repo.getPending(any())).thenAnswer((_) async => ['remote-1', 'remote-2']);
+        when(
+          () => mocks.localDeletion.repo.getPending(any(), settledBefore: any(named: 'settledBefore')),
+        ).thenAnswer((_) async => ['remote-1', 'remote-2']);
 
         await sut.flushPendingDeletions('owner-1');
 
         verifyInOrder([
           () => mocks.localDeletion.repo.pruneAlreadyTrashed(),
           () => mocks.localDeletion.repo.pruneRestored('owner-1'),
-          () => mocks.localDeletion.repo.getPending('owner-1'),
+          () => mocks.localDeletion.repo.getPending('owner-1', settledBefore: any(named: 'settledBefore')),
           () => services.asset.service.trash(['remote-1', 'remote-2']),
           () => mocks.localDeletion.repo.deleteByRemoteIds(['remote-1', 'remote-2']),
         ]);
@@ -85,7 +90,9 @@ void main() {
         ),
       ]) {
         test('keeps the queue when $name', () async {
-          when(() => mocks.localDeletion.repo.getPending(any())).thenAnswer((_) async => ['remote-1']);
+          when(
+            () => mocks.localDeletion.repo.getPending(any(), settledBefore: any(named: 'settledBefore')),
+          ).thenAnswer((_) async => ['remote-1']);
           when(() => services.asset.service.trash(any())).thenThrow(error);
 
           await sut.flushPendingDeletions('owner-1');
@@ -95,7 +102,9 @@ void main() {
       }
 
       test('drops intents the server rejects permanently and keeps flushing the rest', () async {
-        when(() => mocks.localDeletion.repo.getPending(any())).thenAnswer((_) async => ['remote-dead', 'remote-2']);
+        when(
+          () => mocks.localDeletion.repo.getPending(any(), settledBefore: any(named: 'settledBefore')),
+        ).thenAnswer((_) async => ['remote-dead', 'remote-2']);
         when(() => services.asset.service.trash(any())).thenAnswer((invocation) async {
           final ids = invocation.positionalArguments.first as List<String>;
           if (ids.length > 1 || ids.single == 'remote-dead') {
@@ -118,7 +127,9 @@ void main() {
         ('the server features cannot be fetched', null),
       ]) {
         test('skips the flush and keeps the queue when $name', () async {
-          when(() => mocks.localDeletion.repo.getPending(any())).thenAnswer((_) async => ['remote-1']);
+          when(
+            () => mocks.localDeletion.repo.getPending(any(), settledBefore: any(named: 'settledBefore')),
+          ).thenAnswer((_) async => ['remote-1']);
           when(() => services.serverInfo.getServerFeatures()).thenAnswer((_) async => features);
 
           await sut.flushPendingDeletions('owner-1');
@@ -128,9 +139,26 @@ void main() {
         });
       }
 
+      test('only flushes intents older than the settle duration', () async {
+        final before = DateTime.now().subtract(kLocalDeletionSettleDuration);
+
+        await sut.flushPendingDeletions('owner-1');
+
+        final settledBefore =
+            verify(
+                  () =>
+                      mocks.localDeletion.repo.getPending('owner-1', settledBefore: captureAny(named: 'settledBefore')),
+                ).captured.single
+                as DateTime;
+        expect(settledBefore.isBefore(before), isFalse);
+        expect(settledBefore.isAfter(DateTime.now().subtract(kLocalDeletionSettleDuration)), isFalse);
+      });
+
       test('flushes large queues in chunks', () async {
         final pending = [for (int i = 0; i < 1001; i++) 'remote-$i'];
-        when(() => mocks.localDeletion.repo.getPending(any())).thenAnswer((_) async => pending);
+        when(
+          () => mocks.localDeletion.repo.getPending(any(), settledBefore: any(named: 'settledBefore')),
+        ).thenAnswer((_) async => pending);
 
         await sut.flushPendingDeletions('owner-1');
 
@@ -148,7 +176,7 @@ void main() {
         await sut.flush();
 
         verifyNever(() => mocks.localDeletion.repo.pruneAlreadyTrashed());
-        verifyNever(() => mocks.localDeletion.repo.getPending(any()));
+        verifyNever(() => mocks.localDeletion.repo.getPending(any(), settledBefore: any(named: 'settledBefore')));
       });
 
       test('does nothing when there is no authenticated user', () async {
@@ -156,7 +184,7 @@ void main() {
 
         await sut.flush();
 
-        verifyNever(() => mocks.localDeletion.repo.getPending(any()));
+        verifyNever(() => mocks.localDeletion.repo.getPending(any(), settledBefore: any(named: 'settledBefore')));
       });
 
       test('does nothing when photo access is limited', () async {
@@ -164,11 +192,13 @@ void main() {
 
         await sut.flush();
 
-        verifyNever(() => mocks.localDeletion.repo.getPending(any()));
+        verifyNever(() => mocks.localDeletion.repo.getPending(any(), settledBefore: any(named: 'settledBefore')));
       });
 
       test('flushes the pending deletions of the current user', () async {
-        when(() => mocks.localDeletion.repo.getPending(UserStub.admin.id)).thenAnswer((_) async => ['remote-1']);
+        when(
+          () => mocks.localDeletion.repo.getPending(UserStub.admin.id, settledBefore: any(named: 'settledBefore')),
+        ).thenAnswer((_) async => ['remote-1']);
 
         await sut.flush();
 

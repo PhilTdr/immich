@@ -136,6 +136,7 @@ class _BackupPageState extends ConsumerState<BackupPage> {
                   const _TotalCard(),
                   const _BackupCard(),
                   const _RemainderCard(),
+                  const _PendingDeletionsCard(),
                   const Divider(),
                   BackupToggleButton(
                     onStart: () async => await startBackup(),
@@ -531,6 +532,27 @@ class _RemainderCard extends ConsumerWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _PendingDeletionsCard extends ConsumerWidget {
+  const _PendingDeletionsCard();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final isEnabled = ref.watch(appConfigProvider.select((config) => config.backup.syncLocalDeletions));
+    if (!isEnabled) {
+      return const SizedBox.shrink();
+    }
+
+    final pendingCount = ref.watch(pendingDeletionsProvider.select((p) => p.valueOrNull?.length ?? 0));
+
+    return BackupInfoCard(
+      title: context.t.backup_controller_page_deletions,
+      subtitle: context.t.backup_controller_page_deletions_sub,
+      info: pendingCount.toString(),
+      onTap: () => context.pushRoute(const BackupPendingDeletionRoute()),
     );
   }
 }

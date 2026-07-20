@@ -5,6 +5,8 @@ import 'package:immich_mobile/data/db/main/database.dart';
 import 'package:immich_mobile/data/db/main/table/local/deletion.drift.dart';
 import 'package:immich_mobile/infrastructure/repositories/local_deletion.repository.drift.dart';
 
+typedef PendingDeletion = ({String remoteId, String? name, String? thumbHash, DateTime createdAt});
+
 @DriftAccessor()
 class LocalDeletionRepository extends DatabaseAccessor<Drift> with $LocalDeletionRepositoryMixin {
   LocalDeletionRepository(super.attachedDatabase);
@@ -54,11 +56,35 @@ class LocalDeletionRepository extends DatabaseAccessor<Drift> with $LocalDeletio
     return result;
   }
 
-  Future<List<String>> getPending(String ownerId) {
+  /// The remote ids of the intents of [ownerId] that were queued before [settledBefore]
+  Future<List<String>> getPending(String ownerId, {required DateTime settledBefore}) {
     final query = _db.localDeletionEntity.selectOnly()
       ..addColumns([_db.localDeletionEntity.remoteId])
-      ..where(_db.localDeletionEntity.ownerId.equals(ownerId));
+      ..where(
+        _db.localDeletionEntity.ownerId.equals(ownerId) &
+            _db.localDeletionEntity.createdAt.isSmallerThanValue(settledBefore),
+      );
     return query.map((row) => row.read(_db.localDeletionEntity.remoteId)!).get();
+  }
+
+  /// Watches the pending deletions of [ownerId] together with their remote asset
+  Stream<List<PendingDeletion>> watchPending(String ownerId) {
+    final deletion = _db.localDeletionEntity;
+    final remote = _db.remoteAssetEntity;
+    final query = _db.selectOnly(deletion).join([leftOuterJoin(remote, remote.id.equalsExp(deletion.remoteId))])
+      ..addColumns([deletion.remoteId, deletion.createdAt, remote.name, remote.thumbHash])
+      ..where(deletion.ownerId.equals(ownerId))
+      ..orderBy([OrderingTerm.asc(deletion.createdAt)]);
+    return query
+        .map(
+          (row) => (
+            remoteId: row.read(deletion.remoteId)!,
+            name: row.read(remote.name),
+            thumbHash: row.read(remote.thumbHash),
+            createdAt: row.read(deletion.createdAt)!,
+          ),
+        )
+        .watch();
   }
 
   Future<void> deleteByRemoteIds(Iterable<String> remoteIds) async {
