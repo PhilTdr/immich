@@ -188,11 +188,7 @@ class DriftLocalDeletionRepository extends DriftDatabaseRepository {
     );
   }
 
-  /// Clears the queue and all exclusions.
-  Future<void> deleteAll() {
-    return _db.transaction(() async {
-      await _db.delete(_db.localDeletionEntity).go();
-      await _db.delete(_db.localDeletionExclusionEntity).go();
-    });
+  Future<void> clearQueue() {
+    return _db.delete(_db.localDeletionEntity).go();
   }
 }

@@ -180,16 +180,16 @@ void main() {
     });
   });
 
-  group('deleteAll', () {
-    test('removes every queue row and exclusion', () async {
+  group('clearQueue', () {
+    test('removes every queue row but keeps the exclusions', () async {
       await sut.upsert(userId, {'remote-1': 'checksum-1'});
       await sut.upsert('other-user', {'remote-2': 'checksum-2'});
       await sut.markExcluded(['local-1']);
 
-      await sut.deleteAll();
+      await sut.clearQueue();
 
       expect(await queuedRemoteIds(), isEmpty);
-      expect(await excludedLocalIds(), isEmpty);
+      expect(await excludedLocalIds(), ['local-1']);
     });
   });
 }

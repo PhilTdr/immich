@@ -175,7 +175,7 @@ class _BackupSwitchTile extends ConsumerWidget {
   final String titleKey;
   final String subtitleKey;
   final bool enabled;
-  final void Function(bool)? onChanged;
+  final Future<void> Function(bool)? onChanged;
 
   const _BackupSwitchTile({
     required this.metadataKey,
@@ -200,7 +200,7 @@ class _BackupSwitchTile extends ConsumerWidget {
               ? null
               : (bool newValue) async {
                   await ref.read(settingsProvider).write(metadataKey, newValue);
-                  onChanged?.call(newValue);
+                  await onChanged?.call(newValue);
                 },
         ),
       ),
@@ -247,8 +247,8 @@ class _BackupOnlyWhenChargingButton extends ConsumerWidget {
       selector: (c) => c.backup.requireCharging,
       titleKey: "charging",
       subtitleKey: "charging_requirement_mobile_backup",
-      onChanged: (value) {
-        fgService.configure(requireCharging: value);
+      onChanged: (value) async {
+        await fgService.configure(requireCharging: value);
       },
     );
   }
@@ -320,7 +320,8 @@ class _SyncLocalDeletionsButton extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final deletionRepository = ref.watch(localDeletionRepository);
-    final hasFullAccess = ref.watch(_fullMediaPermissionProvider).valueOrNull ?? true;
+    final hasFullAccess = ref.watch(_fullMediaPermissionProvider).valueOrNull ?? false;
+    final isEnabled = ref.watch(appConfigProvider.select((c) => c.backup.syncLocalDeletions));
     return _BackupSwitchTile(
       metadataKey: SettingsKey.backupSyncLocalDeletions,
       selector: (c) => c.backup.syncLocalDeletions,
@@ -328,10 +329,10 @@ class _SyncLocalDeletionsButton extends ConsumerWidget {
       subtitleKey: hasFullAccess
           ? "sync_local_deletions_setting_description"
           : "sync_local_deletions_setting_description_without_permission",
-      enabled: hasFullAccess,
-      onChanged: (enabled) {
+      enabled: hasFullAccess || isEnabled,
+      onChanged: (enabled) async {
         if (!enabled) {
-          unawaited(deletionRepository.deleteAll());
+          await deletionRepository.clearQueue();
         }
       },
     );
