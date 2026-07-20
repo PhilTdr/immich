@@ -103,6 +103,9 @@ class LocalDeletionFlushService {
 
   Future<void> _flushIndividually(List<String> remoteIds) async {
     for (final remoteId in remoteIds) {
+      if (_isCancelled) {
+        return;
+      }
       try {
         await _assetService.trash([remoteId]);
       } on ApiException catch (e, s) {
@@ -110,7 +113,7 @@ class LocalDeletionFlushService {
           _log.warning("Failed to move a deletion to the server trash. Will retry next sync", e, s);
           return;
         }
-        // Permanently rejected (asset gone or inaccessible) -> drop the intent.
+        _log.warning("Dropping the deletion of $remoteId: rejected by the server");
       } catch (e, s) {
         _log.warning("Failed to move a deletion to the server trash. Will retry next sync", e, s);
         return;
@@ -119,7 +122,8 @@ class LocalDeletionFlushService {
     }
   }
 
-  // The client wraps transport failures as ApiException with code 400. Only a
-  // real HTTP response (no inner exception) is a rejection by the server.
-  static bool _isServerRejection(ApiException e) => e.code == 400 && e.innerException == null;
+  static bool _isServerRejection(ApiException e) =>
+      e.code == 400 &&
+      e.innerException == null &&
+      (e.message?.contains("Not found or no asset.delete access") ?? false);
 }

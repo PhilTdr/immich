@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:drift/drift.dart' as drift;
@@ -88,6 +89,8 @@ void main() {
           'the client reports a transport failure as code 400',
           ApiException.withInner(400, 'offline', const SocketException('offline'), StackTrace.empty),
         ),
+        ('a 400 does not carry the server rejection body', ApiException(400, '<html>Bad Request</html>')),
+        ('the server answers with an error', ApiException(500, 'Internal Server Error')),
       ]) {
         test('keeps the queue when $name', () async {
           when(
@@ -117,6 +120,33 @@ void main() {
         verify(() => mocks.localDeletion.repo.deleteByRemoteIds(['remote-dead'])).called(1);
         verify(() => services.asset.service.trash(['remote-2'])).called(1);
         verify(() => mocks.localDeletion.repo.deleteByRemoteIds(['remote-2'])).called(1);
+      });
+
+      test('stops the individual flush when cancelled', () async {
+        final cancellation = Completer<void>();
+        sut = LocalDeletionFlushService(
+          localDeletionRepository: mocks.localDeletion.repo,
+          assetService: services.asset.service,
+          devicePermissionService: devicePermissionService,
+          serverInfoService: services.serverInfo,
+          cancellation: cancellation,
+        );
+        when(
+          () => mocks.localDeletion.repo.getPending(any(), settledBefore: any(named: 'settledBefore')),
+        ).thenAnswer((_) async => ['remote-1', 'remote-2']);
+        when(() => services.asset.service.trash(any())).thenAnswer((invocation) async {
+          final ids = invocation.positionalArguments.first as List<String>;
+          if (ids.length > 1) {
+            // The rejected batch falls back to the per-id flush.
+            throw ApiException(400, 'Not found or no asset.delete access');
+          }
+          cancellation.complete();
+        });
+
+        await sut.flushPendingDeletions('owner-1');
+
+        verify(() => services.asset.service.trash(['remote-1'])).called(1);
+        verifyNever(() => services.asset.service.trash(['remote-2']));
       });
 
       for (final (name, features) in [
