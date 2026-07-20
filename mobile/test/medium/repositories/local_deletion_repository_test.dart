@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/infrastructure/repositories/local_deletion.repository.dart';
 
 import '../repository_context.dart';
@@ -150,15 +151,19 @@ void main() {
       expect(await excludedLocalIds(), {local.id});
     });
 
-    test('ignores trashed, partner-owned, and external-library remotes', () async {
+    test('ignores trashed, partner-owned, external-library, hidden, and locked remotes', () async {
       await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-trashed', deletedAt: DateTime(2024));
       final partner = await ctx.newUser();
       await ctx.newRemoteAsset(ownerId: partner.id, checksum: 'checksum-partner');
       await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-library', libraryId: 'library-1');
+      await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-hidden', visibility: AssetVisibility.hidden);
+      await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-locked', visibility: AssetVisibility.locked);
       final locals = [
         await ctx.newLocalAsset(checksum: 'checksum-trashed'),
         await ctx.newLocalAsset(checksum: 'checksum-partner'),
         await ctx.newLocalAsset(checksum: 'checksum-library'),
+        await ctx.newLocalAsset(checksum: 'checksum-hidden'),
+        await ctx.newLocalAsset(checksum: 'checksum-locked'),
       ];
 
       await sut.snapshotBackedUpAssets(userId);

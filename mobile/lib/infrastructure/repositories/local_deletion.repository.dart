@@ -1,6 +1,7 @@
 import 'package:collection/collection.dart';
 import 'package:drift/drift.dart';
 import 'package:immich_mobile/constants/constants.dart';
+import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/infrastructure/entities/local_deletion.entity.drift.dart';
 import 'package:immich_mobile/infrastructure/repositories/db.repository.dart';
 
@@ -137,8 +138,9 @@ class DriftLocalDeletionRepository extends DriftDatabaseRepository {
         FROM local_asset_entity la
         INNER JOIN remote_asset_entity ra ON ra.checksum = la.checksum
         WHERE ra.owner_id = ? AND ra.deleted_at IS NULL AND ra.library_id IS NULL
+          AND ra.visibility NOT IN (?, ?)
       ''',
-        [ownerId],
+        [ownerId, AssetVisibility.hidden.index, AssetVisibility.locked.index],
       );
     });
   }

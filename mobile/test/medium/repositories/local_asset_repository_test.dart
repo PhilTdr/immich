@@ -606,6 +606,17 @@ void main() {
       expect(result.single.remoteId, isNull);
     });
 
+    test('does not resolve hidden or locked remotes', () async {
+      await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1', visibility: AssetVisibility.hidden);
+      await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-2', visibility: AssetVisibility.locked);
+      await ctx.newLocalAsset(id: 'local-1', checksum: 'checksum-1');
+      await ctx.newLocalAsset(id: 'local-2', checksum: 'checksum-2');
+
+      final result = await sut.getByIds(['local-1', 'local-2'], ownerId: userId);
+
+      expect(result.map((a) => a.remoteId), everyElement(isNull));
+    });
+
     test('does not resolve an external-library remote that shares the checksum', () async {
       await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1', libraryId: 'library-1');
       await ctx.newLocalAsset(id: 'local-1', checksum: 'checksum-1');

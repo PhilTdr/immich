@@ -95,7 +95,8 @@ class DriftLocalAssetRepository extends DriftDatabaseRepository {
           _db.localAssetEntity.checksum.equalsExp(_db.remoteAssetEntity.checksum) &
               _db.remoteAssetEntity.ownerId.equals(ownerId) &
               _db.remoteAssetEntity.deletedAt.isNull() &
-              _db.remoteAssetEntity.libraryId.isNull(),
+              _db.remoteAssetEntity.libraryId.isNull() &
+              _db.remoteAssetEntity.visibility.isNotInValues(const [AssetVisibility.hidden, AssetVisibility.locked]),
           useColumns: false,
         ),
       ])..where(_db.localAssetEntity.id.isIn(slice));
