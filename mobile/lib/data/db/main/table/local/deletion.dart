@@ -1,4 +1,5 @@
 import 'package:drift/drift.dart';
+import 'package:immich_mobile/data/db/util/datetime_clamp_type.dart';
 import 'package:immich_mobile/data/db/util/defaults_mixin.dart';
 
 /// Queue of deletion intents. A row is removed once the server move-to-trash
@@ -11,6 +12,8 @@ class LocalDeletionEntity extends Table with DriftDefaultsMixin {
   TextColumn get checksum => text()();
 
   TextColumn get ownerId => text()();
+
+  DateTimeColumn get createdAt => customType(clampedDateTime).withDefault(currentDateAndTime)();
 
   @override
   Set<Column> get primaryKey => {remoteId};

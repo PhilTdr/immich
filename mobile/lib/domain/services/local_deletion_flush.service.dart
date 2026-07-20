@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:collection/collection.dart';
 import 'package:flutter/foundation.dart';
+import 'package:immich_mobile/constants/constants.dart';
 import 'package:immich_mobile/domain/models/store.model.dart';
 import 'package:immich_mobile/domain/services/asset.service.dart';
 import 'package:immich_mobile/domain/services/device_permission.service.dart';
@@ -56,7 +57,8 @@ class LocalDeletionFlushService {
   Future<void> flushPendingDeletions(String ownerId) async {
     await _localDeletionRepository.pruneAlreadyTrashed();
     await _localDeletionRepository.pruneRestored(ownerId);
-    final remoteIds = await _localDeletionRepository.getPending(ownerId);
+    final settledBefore = DateTime.now().subtract(kLocalDeletionSettleDuration);
+    final remoteIds = await _localDeletionRepository.getPending(ownerId, settledBefore: settledBefore);
     if (remoteIds.isEmpty) {
       return;
     }

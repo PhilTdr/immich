@@ -1,4 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:immich_mobile/constants/constants.dart';
+import 'package:immich_mobile/data/db/main/table/local/deletion.drift.dart';
 import 'package:immich_mobile/infrastructure/repositories/local_deletion.repository.dart';
 
 import '../repository_context.dart';
@@ -33,6 +35,12 @@ void main() {
     return rows.map((r) => r.localId).toSet();
   }
 
+  Future<void> backdate(String remoteId, DateTime createdAt) {
+    return (ctx.db.update(
+      ctx.db.localDeletionEntity,
+    )..where((row) => row.remoteId.equals(remoteId))).write(LocalDeletionEntityCompanion(createdAt: .new(createdAt)));
+  }
+
   group('upsert', () {
     test('inserts and updates queue rows keyed by remote id', () async {
       await sut.upsert(userId, {'remote-1': 'checksum-1'});
@@ -40,6 +48,16 @@ void main() {
 
       await sut.upsert(userId, {'remote-1': 'checksum-1-updated', 'remote-2': 'checksum-2'});
       expect(await queuedChecksums(), {'remote-1': 'checksum-1-updated', 'remote-2': 'checksum-2'});
+    });
+
+    test('keeps the original createdAt when an intent is queued again', () async {
+      await sut.upsert(userId, {'remote-1': 'checksum-1'});
+      await backdate('remote-1', DateTime.utc(2024));
+
+      await sut.upsert(userId, {'remote-1': 'checksum-1'});
+
+      final row = await ctx.db.select(ctx.db.localDeletionEntity).getSingle();
+      expect(row.createdAt.isAtSameMomentAs(DateTime.utc(2024)), isTrue);
     });
   });
 
@@ -92,14 +110,44 @@ void main() {
     test('returns the remote ids queued for the account', () async {
       await sut.upsert(userId, {'remote-1': 'checksum-1', 'remote-2': 'checksum-2'});
 
-      expect(await sut.getPending(userId), unorderedEquals(['remote-1', 'remote-2']));
+      expect(
+        await sut.getPending(userId, settledBefore: DateTime.now().add(const Duration(minutes: 1))),
+        unorderedEquals(['remote-1', 'remote-2']),
+      );
     });
 
     test('excludes rows owned by another account', () async {
       await sut.upsert(userId, {'remote-1': 'checksum-1'});
       await sut.upsert('other-user', {'remote-2': 'checksum-2'});
 
-      expect(await sut.getPending(userId), ['remote-1']);
+      expect(await sut.getPending(userId, settledBefore: DateTime.now().add(const Duration(minutes: 1))), ['remote-1']);
+    });
+
+    test('returns only intents queued before the settle window', () async {
+      await sut.upsert(userId, {'remote-settled': 'checksum-1', 'remote-fresh': 'checksum-2'});
+      await backdate(
+        'remote-settled',
+        DateTime.now().subtract(kLocalDeletionSettleDuration + const Duration(minutes: 1)),
+      );
+
+      final settledBefore = DateTime.now().subtract(kLocalDeletionSettleDuration);
+      expect(await sut.getPending(userId, settledBefore: settledBefore), ['remote-settled']);
+    });
+  });
+
+  group('watchPending', () {
+    test('emits the intents of the account oldest first, with their remote asset', () async {
+      final remote = await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1');
+      await sut.upsert(userId, {remote.id: 'checksum-1', 'remote-unknown': 'checksum-2'});
+      await sut.upsert('other-user', {'remote-other': 'checksum-3'});
+      await backdate('remote-unknown', DateTime.utc(2024));
+
+      final pending = await sut.watchPending(userId).first;
+
+      expect(pending.map((p) => p.remoteId), ['remote-unknown', remote.id]);
+      expect(pending.first.name, isNull);
+      expect(pending.last.name, remote.name);
+      expect(pending.last.thumbHash, remote.thumbHash);
     });
   });
 
