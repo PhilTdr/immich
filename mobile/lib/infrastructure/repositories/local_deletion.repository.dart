@@ -101,10 +101,14 @@ class LocalDeletionRepository extends DatabaseAccessor<Drift> with $LocalDeletio
 
   /// Drops intents whose remote asset is already in the server trash
   Future<void> pruneAlreadyTrashed() {
-    final trashedRemotes = _db.remoteAssetEntity.selectOnly()
-      ..addColumns([_db.remoteAssetEntity.id])
-      ..where(_db.remoteAssetEntity.deletedAt.isNotNull());
-    return (_db.delete(_db.localDeletionEntity)..where((row) => row.remoteId.isInQuery(trashedRemotes))).go();
+    return (_db.delete(_db.localDeletionEntity)..where(
+          (row) => existsQuery(
+            _db.remoteAssetEntity.selectOnly()
+              ..addColumns([_db.remoteAssetEntity.id])
+              ..where(_db.remoteAssetEntity.id.equalsExp(row.remoteId) & _db.remoteAssetEntity.deletedAt.isNotNull()),
+          ),
+        ))
+        .go();
   }
 
   /// Drops intents of [ownerId] whose content is still on the device, e.g. restored or moved copies
