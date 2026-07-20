@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:drift/drift.dart' as drift;
@@ -139,6 +140,65 @@ void main() {
 
       verifyNever(() => mockLocalDeletionRepository.deleteByRemoteIds(any()));
       verifyNever(() => mockRemoteAssetRepository.trash(any()));
+    });
+
+    test('keeps the queue when a 400 does not carry the server rejection body', () async {
+      when(
+        () => mockLocalDeletionRepository.getPending(any()),
+      ).thenAnswer((_) async => [(remoteId: 'remote-1', checksum: 'checksum-1', createdAt: settled)]);
+      // e.g. a reverse proxy or WAF answering with its own 400 page.
+      when(
+        () => mockAssetApiRepository.delete(any(), any()),
+      ).thenThrow(ApiException(400, '<html>Bad Request</html>'));
+
+      await sut.flushPendingDeletions('owner-1');
+
+      verifyNever(() => mockLocalDeletionRepository.deleteByRemoteIds(any()));
+      verifyNever(() => mockRemoteAssetRepository.trash(any()));
+    });
+
+    test('keeps the queue on server errors', () async {
+      when(
+        () => mockLocalDeletionRepository.getPending(any()),
+      ).thenAnswer((_) async => [(remoteId: 'remote-1', checksum: 'checksum-1', createdAt: settled)]);
+      when(() => mockAssetApiRepository.delete(any(), any())).thenThrow(ApiException(500, 'Internal Server Error'));
+
+      await sut.flushPendingDeletions('owner-1');
+
+      verifyNever(() => mockLocalDeletionRepository.deleteByRemoteIds(any()));
+      verifyNever(() => mockRemoteAssetRepository.trash(any()));
+    });
+
+    test('stops the individual flush when cancelled', () async {
+      final cancellation = Completer<void>();
+      final cancellableSut = LocalDeletionFlushService(
+        localDeletionRepository: mockLocalDeletionRepository,
+        localAssetRepository: mockLocalAssetRepository,
+        assetApiRepository: mockAssetApiRepository,
+        remoteAssetRepository: mockRemoteAssetRepository,
+        permissionRepository: mockPermissionRepository,
+        serverInfoService: mockServerInfoService,
+        cancellation: cancellation,
+      );
+      when(() => mockLocalDeletionRepository.getPending(any())).thenAnswer(
+        (_) async => [
+          (remoteId: 'remote-1', checksum: 'checksum-1', createdAt: settled),
+          (remoteId: 'remote-2', checksum: 'checksum-2', createdAt: settled),
+        ],
+      );
+      when(() => mockAssetApiRepository.delete(any(), any())).thenAnswer((invocation) async {
+        final ids = invocation.positionalArguments.first as List<String>;
+        if (ids.length > 1) {
+          // The rejected batch falls back to the per-id flush.
+          throw ApiException(400, 'Not found or no asset.delete access');
+        }
+        cancellation.complete();
+      });
+
+      await cancellableSut.flushPendingDeletions('owner-1');
+
+      verify(() => mockAssetApiRepository.delete(['remote-1'], false)).called(1);
+      verifyNever(() => mockAssetApiRepository.delete(['remote-2'], false));
     });
 
     test('drops intents the server rejects permanently and keeps flushing the rest', () async {
