@@ -3052,6 +3052,16 @@
             "default_dart": null,
             "default_client_dart": null,
             "dsl_features": []
+          },
+          {
+            "name": "created_at",
+            "getter_name": "createdAt",
+            "moor_type": "dateTime",
+            "nullable": false,
+            "customConstraints": null,
+            "default_dart": null,
+            "default_client_dart": null,
+            "dsl_features": []
           }
         ],
         "is_virtual": false,
@@ -3586,7 +3596,7 @@
       "sql": [
         {
           "dialect": "sqlite",
-          "sql": "CREATE TABLE IF NOT EXISTS \"local_deletion_entity\" (\"remote_id\" TEXT NOT NULL, \"checksum\" TEXT NOT NULL, \"owner_id\" TEXT NOT NULL, PRIMARY KEY (\"remote_id\")) WITHOUT ROWID, STRICT;"
+          "sql": "CREATE TABLE IF NOT EXISTS \"local_deletion_entity\" (\"remote_id\" TEXT NOT NULL, \"checksum\" TEXT NOT NULL, \"owner_id\" TEXT NOT NULL, \"created_at\" TEXT NOT NULL, PRIMARY KEY (\"remote_id\")) WITHOUT ROWID, STRICT;"
         }
       ]
     },

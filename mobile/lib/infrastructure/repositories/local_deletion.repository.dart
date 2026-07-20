@@ -16,21 +16,54 @@ class DriftLocalDeletionRepository extends DriftDatabaseRepository {
       return;
     }
 
+    final now = DateTime.now();
     await _db.batch((batch) {
       for (final entry in remoteIdToChecksum.entries) {
-        final companion = LocalDeletionEntityCompanion.insert(
-          remoteId: entry.key,
-          checksum: entry.value,
-          ownerId: ownerId,
+        batch.insert(
+          _db.localDeletionEntity,
+          LocalDeletionEntityCompanion.insert(
+            remoteId: entry.key,
+            checksum: entry.value,
+            ownerId: ownerId,
+            createdAt: now,
+          ),
+          // do not update the createdAt value
+          onConflict: DoUpdate(
+            (_) => LocalDeletionEntityCompanion(checksum: Value(entry.value), ownerId: Value(ownerId)),
+          ),
         );
-        batch.insert(_db.localDeletionEntity, companion, onConflict: DoUpdate((_) => companion));
       }
     });
   }
 
-  Future<List<({String remoteId, String checksum})>> getPending(String ownerId) {
+  Future<List<({String remoteId, String checksum, DateTime createdAt})>> getPending(String ownerId) {
     final query = _db.localDeletionEntity.select()..where((row) => row.ownerId.equals(ownerId));
-    return query.map((row) => (remoteId: row.remoteId, checksum: row.checksum)).get();
+    return query
+        .map((row) => (remoteId: row.remoteId, checksum: row.checksum, createdAt: row.createdAt))
+        .get();
+  }
+
+  /// Watches the pending deletions of [ownerId] together with their mirrored
+  /// remote asset.
+  Stream<List<({String remoteId, String? name, String? thumbHash, DateTime createdAt})>> watchPending(
+    String ownerId,
+  ) {
+    final deletion = _db.localDeletionEntity;
+    final remote = _db.remoteAssetEntity;
+    final query = _db.selectOnly(deletion).join([leftOuterJoin(remote, remote.id.equalsExp(deletion.remoteId))])
+      ..addColumns([deletion.remoteId, deletion.createdAt, remote.name, remote.thumbHash])
+      ..where(deletion.ownerId.equals(ownerId))
+      ..orderBy([OrderingTerm.asc(deletion.createdAt)]);
+    return query
+        .map(
+          (row) => (
+            remoteId: row.read(deletion.remoteId)!,
+            name: row.read(remote.name),
+            thumbHash: row.read(remote.thumbHash),
+            createdAt: row.read(deletion.createdAt)!,
+          ),
+        )
+        .watch();
   }
 
   Future<void> deleteByRemoteIds(Iterable<String> remoteIds) async {

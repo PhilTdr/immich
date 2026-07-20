@@ -21,6 +21,7 @@ import 'package:immich_mobile/providers/permission.provider.dart';
 import 'package:immich_mobile/providers/sync_status.provider.dart';
 import 'package:immich_mobile/providers/user.provider.dart';
 import 'package:immich_mobile/routing/router.dart';
+import 'package:immich_mobile/infrastructure/repositories/settings.repository.dart';
 import 'package:immich_mobile/widgets/backup/backup_info_card.dart';
 import 'package:immich_ui/immich_ui.dart';
 import 'package:logging/logging.dart';
@@ -138,6 +139,7 @@ class _DriftBackupPageState extends ConsumerState<DriftBackupPage> {
                   const _TotalCard(),
                   const _BackupCard(),
                   const _RemainderCard(),
+                  const _PendingDeletionsCard(),
                   const Divider(),
                   BackupToggleButton(
                     onStart: () async => await startBackup(),
@@ -530,6 +532,26 @@ class _RemainderCard extends ConsumerWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _PendingDeletionsCard extends ConsumerWidget {
+  const _PendingDeletionsCard();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    if (!SettingsRepository.instance.appConfig.backup.syncLocalDeletions) {
+      return const SizedBox.shrink();
+    }
+
+    final pendingCount = ref.watch(driftPendingDeletionsProvider.select((p) => p.valueOrNull?.length ?? 0));
+
+    return BackupInfoCard(
+      title: "backup_controller_page_deletions".tr(),
+      subtitle: "backup_controller_page_deletions_sub".tr(),
+      info: pendingCount.toString(),
+      onTap: () => context.pushRoute(const DriftBackupPendingDeletionRoute()),
     );
   }
 }

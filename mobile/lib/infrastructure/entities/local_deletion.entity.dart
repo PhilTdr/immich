@@ -12,6 +12,8 @@ class LocalDeletionEntity extends Table with DriftDefaultsMixin {
 
   TextColumn get ownerId => text()();
 
+  DateTimeColumn get createdAt => dateTime()();
+
   @override
   Set<Column> get primaryKey => {remoteId};
 }

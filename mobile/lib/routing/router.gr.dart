@@ -564,6 +564,22 @@ class DriftBackupRoute extends PageRouteInfo<void> {
 }
 
 /// generated route for
+/// [DriftBackupPendingDeletionPage]
+class DriftBackupPendingDeletionRoute extends PageRouteInfo<void> {
+  const DriftBackupPendingDeletionRoute({List<PageRouteInfo>? children})
+    : super(DriftBackupPendingDeletionRoute.name, initialChildren: children);
+
+  static const String name = 'DriftBackupPendingDeletionRoute';
+
+  static PageInfo page = PageInfo(
+    name,
+    builder: (data) {
+      return const DriftBackupPendingDeletionPage();
+    },
+  );
+}
+
+/// generated route for
 /// [DriftCreateAlbumPage]
 class DriftCreateAlbumRoute extends PageRouteInfo<void> {
   const DriftCreateAlbumRoute({List<PageRouteInfo>? children})

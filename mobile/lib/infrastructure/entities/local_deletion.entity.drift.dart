@@ -11,12 +11,14 @@ typedef $$LocalDeletionEntityTableCreateCompanionBuilder =
       required String remoteId,
       required String checksum,
       required String ownerId,
+      required DateTime createdAt,
     });
 typedef $$LocalDeletionEntityTableUpdateCompanionBuilder =
     i1.LocalDeletionEntityCompanion Function({
       i0.Value<String> remoteId,
       i0.Value<String> checksum,
       i0.Value<String> ownerId,
+      i0.Value<DateTime> createdAt,
     });
 
 class $$LocalDeletionEntityTableFilterComposer
@@ -40,6 +42,11 @@ class $$LocalDeletionEntityTableFilterComposer
 
   i0.ColumnFilters<String> get ownerId => $composableBuilder(
     column: $table.ownerId,
+    builder: (column) => i0.ColumnFilters(column),
+  );
+
+  i0.ColumnFilters<DateTime> get createdAt => $composableBuilder(
+    column: $table.createdAt,
     builder: (column) => i0.ColumnFilters(column),
   );
 }
@@ -67,6 +74,11 @@ class $$LocalDeletionEntityTableOrderingComposer
     column: $table.ownerId,
     builder: (column) => i0.ColumnOrderings(column),
   );
+
+  i0.ColumnOrderings<DateTime> get createdAt => $composableBuilder(
+    column: $table.createdAt,
+    builder: (column) => i0.ColumnOrderings(column),
+  );
 }
 
 class $$LocalDeletionEntityTableAnnotationComposer
@@ -86,6 +98,9 @@ class $$LocalDeletionEntityTableAnnotationComposer
 
   i0.GeneratedColumn<String> get ownerId =>
       $composableBuilder(column: $table.ownerId, builder: (column) => column);
+
+  i0.GeneratedColumn<DateTime> get createdAt =>
+      $composableBuilder(column: $table.createdAt, builder: (column) => column);
 }
 
 class $$LocalDeletionEntityTableTableManager
@@ -134,20 +149,24 @@ class $$LocalDeletionEntityTableTableManager
                 i0.Value<String> remoteId = const i0.Value.absent(),
                 i0.Value<String> checksum = const i0.Value.absent(),
                 i0.Value<String> ownerId = const i0.Value.absent(),
+                i0.Value<DateTime> createdAt = const i0.Value.absent(),
               }) => i1.LocalDeletionEntityCompanion(
                 remoteId: remoteId,
                 checksum: checksum,
                 ownerId: ownerId,
+                createdAt: createdAt,
               ),
           createCompanionCallback:
               ({
                 required String remoteId,
                 required String checksum,
                 required String ownerId,
+                required DateTime createdAt,
               }) => i1.LocalDeletionEntityCompanion.insert(
                 remoteId: remoteId,
                 checksum: checksum,
                 ownerId: ownerId,
+                createdAt: createdAt,
               ),
           withReferenceMapper: (p0) => p0
               .map((e) => (e.readTable(table), i0.BaseReferences(db, table, e)))
@@ -360,8 +379,25 @@ class $LocalDeletionEntityTable extends i2.LocalDeletionEntity
     type: i0.DriftSqlType.string,
     requiredDuringInsert: true,
   );
+  static const i0.VerificationMeta _createdAtMeta = const i0.VerificationMeta(
+    'createdAt',
+  );
   @override
-  List<i0.GeneratedColumn> get $columns => [remoteId, checksum, ownerId];
+  late final i0.GeneratedColumn<DateTime> createdAt =
+      i0.GeneratedColumn<DateTime>(
+        'created_at',
+        aliasedName,
+        false,
+        type: i0.DriftSqlType.dateTime,
+        requiredDuringInsert: true,
+      );
+  @override
+  List<i0.GeneratedColumn> get $columns => [
+    remoteId,
+    checksum,
+    ownerId,
+    createdAt,
+  ];
   @override
   String get aliasedName => _alias ?? actualTableName;
   @override
@@ -398,6 +434,14 @@ class $LocalDeletionEntityTable extends i2.LocalDeletionEntity
     } else if (isInserting) {
       context.missing(_ownerIdMeta);
     }
+    if (data.containsKey('created_at')) {
+      context.handle(
+        _createdAtMeta,
+        createdAt.isAcceptableOrUnknown(data['created_at']!, _createdAtMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_createdAtMeta);
+    }
     return context;
   }
 
@@ -422,6 +466,10 @@ class $LocalDeletionEntityTable extends i2.LocalDeletionEntity
         i0.DriftSqlType.string,
         data['${effectivePrefix}owner_id'],
       )!,
+      createdAt: attachedDatabase.typeMapping.read(
+        i0.DriftSqlType.dateTime,
+        data['${effectivePrefix}created_at'],
+      )!,
     );
   }
 
@@ -441,10 +489,12 @@ class LocalDeletionEntityData extends i0.DataClass
   final String remoteId;
   final String checksum;
   final String ownerId;
+  final DateTime createdAt;
   const LocalDeletionEntityData({
     required this.remoteId,
     required this.checksum,
     required this.ownerId,
+    required this.createdAt,
   });
   @override
   Map<String, i0.Expression> toColumns(bool nullToAbsent) {
@@ -452,6 +502,7 @@ class LocalDeletionEntityData extends i0.DataClass
     map['remote_id'] = i0.Variable<String>(remoteId);
     map['checksum'] = i0.Variable<String>(checksum);
     map['owner_id'] = i0.Variable<String>(ownerId);
+    map['created_at'] = i0.Variable<DateTime>(createdAt);
     return map;
   }
 
@@ -464,6 +515,7 @@ class LocalDeletionEntityData extends i0.DataClass
       remoteId: serializer.fromJson<String>(json['remoteId']),
       checksum: serializer.fromJson<String>(json['checksum']),
       ownerId: serializer.fromJson<String>(json['ownerId']),
+      createdAt: serializer.fromJson<DateTime>(json['createdAt']),
     );
   }
   @override
@@ -473,6 +525,7 @@ class LocalDeletionEntityData extends i0.DataClass
       'remoteId': serializer.toJson<String>(remoteId),
       'checksum': serializer.toJson<String>(checksum),
       'ownerId': serializer.toJson<String>(ownerId),
+      'createdAt': serializer.toJson<DateTime>(createdAt),
     };
   }
 
@@ -480,10 +533,12 @@ class LocalDeletionEntityData extends i0.DataClass
     String? remoteId,
     String? checksum,
     String? ownerId,
+    DateTime? createdAt,
   }) => i1.LocalDeletionEntityData(
     remoteId: remoteId ?? this.remoteId,
     checksum: checksum ?? this.checksum,
     ownerId: ownerId ?? this.ownerId,
+    createdAt: createdAt ?? this.createdAt,
   );
   LocalDeletionEntityData copyWithCompanion(
     i1.LocalDeletionEntityCompanion data,
@@ -492,6 +547,7 @@ class LocalDeletionEntityData extends i0.DataClass
       remoteId: data.remoteId.present ? data.remoteId.value : this.remoteId,
       checksum: data.checksum.present ? data.checksum.value : this.checksum,
       ownerId: data.ownerId.present ? data.ownerId.value : this.ownerId,
+      createdAt: data.createdAt.present ? data.createdAt.value : this.createdAt,
     );
   }
 
@@ -500,20 +556,22 @@ class LocalDeletionEntityData extends i0.DataClass
     return (StringBuffer('LocalDeletionEntityData(')
           ..write('remoteId: $remoteId, ')
           ..write('checksum: $checksum, ')
-          ..write('ownerId: $ownerId')
+          ..write('ownerId: $ownerId, ')
+          ..write('createdAt: $createdAt')
           ..write(')'))
         .toString();
   }
 
   @override
-  int get hashCode => Object.hash(remoteId, checksum, ownerId);
+  int get hashCode => Object.hash(remoteId, checksum, ownerId, createdAt);
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       (other is i1.LocalDeletionEntityData &&
           other.remoteId == this.remoteId &&
           other.checksum == this.checksum &&
-          other.ownerId == this.ownerId);
+          other.ownerId == this.ownerId &&
+          other.createdAt == this.createdAt);
 }
 
 class LocalDeletionEntityCompanion
@@ -521,27 +579,33 @@ class LocalDeletionEntityCompanion
   final i0.Value<String> remoteId;
   final i0.Value<String> checksum;
   final i0.Value<String> ownerId;
+  final i0.Value<DateTime> createdAt;
   const LocalDeletionEntityCompanion({
     this.remoteId = const i0.Value.absent(),
     this.checksum = const i0.Value.absent(),
     this.ownerId = const i0.Value.absent(),
+    this.createdAt = const i0.Value.absent(),
   });
   LocalDeletionEntityCompanion.insert({
     required String remoteId,
     required String checksum,
     required String ownerId,
+    required DateTime createdAt,
   }) : remoteId = i0.Value(remoteId),
        checksum = i0.Value(checksum),
-       ownerId = i0.Value(ownerId);
+       ownerId = i0.Value(ownerId),
+       createdAt = i0.Value(createdAt);
   static i0.Insertable<i1.LocalDeletionEntityData> custom({
     i0.Expression<String>? remoteId,
     i0.Expression<String>? checksum,
     i0.Expression<String>? ownerId,
+    i0.Expression<DateTime>? createdAt,
   }) {
     return i0.RawValuesInsertable({
       if (remoteId != null) 'remote_id': remoteId,
       if (checksum != null) 'checksum': checksum,
       if (ownerId != null) 'owner_id': ownerId,
+      if (createdAt != null) 'created_at': createdAt,
     });
   }
 
@@ -549,11 +613,13 @@ class LocalDeletionEntityCompanion
     i0.Value<String>? remoteId,
     i0.Value<String>? checksum,
     i0.Value<String>? ownerId,
+    i0.Value<DateTime>? createdAt,
   }) {
     return i1.LocalDeletionEntityCompanion(
       remoteId: remoteId ?? this.remoteId,
       checksum: checksum ?? this.checksum,
       ownerId: ownerId ?? this.ownerId,
+      createdAt: createdAt ?? this.createdAt,
     );
   }
 
@@ -569,6 +635,9 @@ class LocalDeletionEntityCompanion
     if (ownerId.present) {
       map['owner_id'] = i0.Variable<String>(ownerId.value);
     }
+    if (createdAt.present) {
+      map['created_at'] = i0.Variable<DateTime>(createdAt.value);
+    }
     return map;
   }
 
@@ -577,7 +646,8 @@ class LocalDeletionEntityCompanion
     return (StringBuffer('LocalDeletionEntityCompanion(')
           ..write('remoteId: $remoteId, ')
           ..write('checksum: $checksum, ')
-          ..write('ownerId: $ownerId')
+          ..write('ownerId: $ownerId, ')
+          ..write('createdAt: $createdAt')
           ..write(')'))
         .toString();
   }

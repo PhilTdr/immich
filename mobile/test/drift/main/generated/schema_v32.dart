@@ -9697,8 +9697,21 @@ class LocalDeletionEntity extends Table
     requiredDuringInsert: true,
     $customConstraints: 'NOT NULL',
   );
+  late final GeneratedColumn<String> createdAt = GeneratedColumn<String>(
+    'created_at',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+    $customConstraints: 'NOT NULL',
+  );
   @override
-  List<GeneratedColumn> get $columns => [remoteId, checksum, ownerId];
+  List<GeneratedColumn> get $columns => [
+    remoteId,
+    checksum,
+    ownerId,
+    createdAt,
+  ];
   @override
   String get aliasedName => _alias ?? actualTableName;
   @override
@@ -9725,6 +9738,10 @@ class LocalDeletionEntity extends Table
         DriftSqlType.string,
         data['${effectivePrefix}owner_id'],
       )!,
+      createdAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}created_at'],
+      )!,
     );
   }
 
@@ -9748,10 +9765,12 @@ class LocalDeletionEntityData extends DataClass
   final String remoteId;
   final String checksum;
   final String ownerId;
+  final String createdAt;
   const LocalDeletionEntityData({
     required this.remoteId,
     required this.checksum,
     required this.ownerId,
+    required this.createdAt,
   });
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
@@ -9759,6 +9778,7 @@ class LocalDeletionEntityData extends DataClass
     map['remote_id'] = Variable<String>(remoteId);
     map['checksum'] = Variable<String>(checksum);
     map['owner_id'] = Variable<String>(ownerId);
+    map['created_at'] = Variable<String>(createdAt);
     return map;
   }
 
@@ -9771,6 +9791,7 @@ class LocalDeletionEntityData extends DataClass
       remoteId: serializer.fromJson<String>(json['remoteId']),
       checksum: serializer.fromJson<String>(json['checksum']),
       ownerId: serializer.fromJson<String>(json['ownerId']),
+      createdAt: serializer.fromJson<String>(json['createdAt']),
     );
   }
   @override
@@ -9780,6 +9801,7 @@ class LocalDeletionEntityData extends DataClass
       'remoteId': serializer.toJson<String>(remoteId),
       'checksum': serializer.toJson<String>(checksum),
       'ownerId': serializer.toJson<String>(ownerId),
+      'createdAt': serializer.toJson<String>(createdAt),
     };
   }
 
@@ -9787,16 +9809,19 @@ class LocalDeletionEntityData extends DataClass
     String? remoteId,
     String? checksum,
     String? ownerId,
+    String? createdAt,
   }) => LocalDeletionEntityData(
     remoteId: remoteId ?? this.remoteId,
     checksum: checksum ?? this.checksum,
     ownerId: ownerId ?? this.ownerId,
+    createdAt: createdAt ?? this.createdAt,
   );
   LocalDeletionEntityData copyWithCompanion(LocalDeletionEntityCompanion data) {
     return LocalDeletionEntityData(
       remoteId: data.remoteId.present ? data.remoteId.value : this.remoteId,
       checksum: data.checksum.present ? data.checksum.value : this.checksum,
       ownerId: data.ownerId.present ? data.ownerId.value : this.ownerId,
+      createdAt: data.createdAt.present ? data.createdAt.value : this.createdAt,
     );
   }
 
@@ -9805,20 +9830,22 @@ class LocalDeletionEntityData extends DataClass
     return (StringBuffer('LocalDeletionEntityData(')
           ..write('remoteId: $remoteId, ')
           ..write('checksum: $checksum, ')
-          ..write('ownerId: $ownerId')
+          ..write('ownerId: $ownerId, ')
+          ..write('createdAt: $createdAt')
           ..write(')'))
         .toString();
   }
 
   @override
-  int get hashCode => Object.hash(remoteId, checksum, ownerId);
+  int get hashCode => Object.hash(remoteId, checksum, ownerId, createdAt);
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       (other is LocalDeletionEntityData &&
           other.remoteId == this.remoteId &&
           other.checksum == this.checksum &&
-          other.ownerId == this.ownerId);
+          other.ownerId == this.ownerId &&
+          other.createdAt == this.createdAt);
 }
 
 class LocalDeletionEntityCompanion
@@ -9826,27 +9853,33 @@ class LocalDeletionEntityCompanion
   final Value<String> remoteId;
   final Value<String> checksum;
   final Value<String> ownerId;
+  final Value<String> createdAt;
   const LocalDeletionEntityCompanion({
     this.remoteId = const Value.absent(),
     this.checksum = const Value.absent(),
     this.ownerId = const Value.absent(),
+    this.createdAt = const Value.absent(),
   });
   LocalDeletionEntityCompanion.insert({
     required String remoteId,
     required String checksum,
     required String ownerId,
+    required String createdAt,
   }) : remoteId = Value(remoteId),
        checksum = Value(checksum),
-       ownerId = Value(ownerId);
+       ownerId = Value(ownerId),
+       createdAt = Value(createdAt);
   static Insertable<LocalDeletionEntityData> custom({
     Expression<String>? remoteId,
     Expression<String>? checksum,
     Expression<String>? ownerId,
+    Expression<String>? createdAt,
   }) {
     return RawValuesInsertable({
       if (remoteId != null) 'remote_id': remoteId,
       if (checksum != null) 'checksum': checksum,
       if (ownerId != null) 'owner_id': ownerId,
+      if (createdAt != null) 'created_at': createdAt,
     });
   }
 
@@ -9854,11 +9887,13 @@ class LocalDeletionEntityCompanion
     Value<String>? remoteId,
     Value<String>? checksum,
     Value<String>? ownerId,
+    Value<String>? createdAt,
   }) {
     return LocalDeletionEntityCompanion(
       remoteId: remoteId ?? this.remoteId,
       checksum: checksum ?? this.checksum,
       ownerId: ownerId ?? this.ownerId,
+      createdAt: createdAt ?? this.createdAt,
     );
   }
 
@@ -9874,6 +9909,9 @@ class LocalDeletionEntityCompanion
     if (ownerId.present) {
       map['owner_id'] = Variable<String>(ownerId.value);
     }
+    if (createdAt.present) {
+      map['created_at'] = Variable<String>(createdAt.value);
+    }
     return map;
   }
 
@@ -9882,7 +9920,8 @@ class LocalDeletionEntityCompanion
     return (StringBuffer('LocalDeletionEntityCompanion(')
           ..write('remoteId: $remoteId, ')
           ..write('checksum: $checksum, ')
-          ..write('ownerId: $ownerId')
+          ..write('ownerId: $ownerId, ')
+          ..write('createdAt: $createdAt')
           ..write(')'))
         .toString();
   }

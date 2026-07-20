@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:collection/collection.dart';
 import 'package:flutter/foundation.dart';
+import 'package:immich_mobile/constants/constants.dart';
 import 'package:immich_mobile/domain/models/store.model.dart';
 import 'package:immich_mobile/entities/store.entity.dart';
 import 'package:immich_mobile/infrastructure/repositories/local_asset.repository.dart';
@@ -79,9 +80,10 @@ class LocalDeletionFlushService {
       await _localDeletionRepository.deleteByRemoteIds(cancel);
     }
 
+    final settledBefore = DateTime.now().subtract(kLocalDeletionSettleDuration);
     final remoteIds = [
       for (final e in pending)
-        if (!present.contains(e.checksum)) e.remoteId,
+        if (!present.contains(e.checksum) && e.createdAt.isBefore(settledBefore)) e.remoteId,
     ];
     if (remoteIds.isEmpty) {
       return;

@@ -21,6 +21,7 @@ import '../../infrastructure/repository.mock.dart';
 import '../../repository.mocks.dart';
 
 void main() {
+  final settled = DateTime.now().subtract(const Duration(minutes: 16));
   late LocalDeletionFlushService sut;
   late MockLocalDeletionRepository mockLocalDeletionRepository;
   late MockLocalAssetRepository mockLocalAssetRepository;
@@ -80,7 +81,10 @@ void main() {
   group('LocalDeletionFlushService - flushPendingDeletions', () {
     test('moves pending deletions to the server trash and clears their queue rows', () async {
       when(() => mockLocalDeletionRepository.getPending(any())).thenAnswer(
-        (_) async => [(remoteId: 'remote-1', checksum: 'checksum-1'), (remoteId: 'remote-2', checksum: 'checksum-2')],
+        (_) async => [
+          (remoteId: 'remote-1', checksum: 'checksum-1', createdAt: settled),
+          (remoteId: 'remote-2', checksum: 'checksum-2', createdAt: settled),
+        ],
       );
 
       await sut.flushPendingDeletions('owner-1');
@@ -95,7 +99,10 @@ void main() {
 
     test('cancels pending deletions whose content is still present locally', () async {
       when(() => mockLocalDeletionRepository.getPending(any())).thenAnswer(
-        (_) async => [(remoteId: 'remote-1', checksum: 'checksum-1'), (remoteId: 'remote-2', checksum: 'checksum-2')],
+        (_) async => [
+          (remoteId: 'remote-1', checksum: 'checksum-1', createdAt: settled),
+          (remoteId: 'remote-2', checksum: 'checksum-2', createdAt: settled),
+        ],
       );
       // checksum-1 still exists locally -> cancel remote-1.
       when(() => mockLocalAssetRepository.getExistingChecksums(any())).thenAnswer((_) async => {'checksum-1'});
@@ -110,7 +117,7 @@ void main() {
     test('leaves deletions queued when the server call fails', () async {
       when(
         () => mockLocalDeletionRepository.getPending(any()),
-      ).thenAnswer((_) async => [(remoteId: 'remote-1', checksum: 'checksum-1')]);
+      ).thenAnswer((_) async => [(remoteId: 'remote-1', checksum: 'checksum-1', createdAt: settled)]);
       when(() => mockAssetApiRepository.delete(any(), any())).thenThrow(Exception('network'));
 
       await sut.flushPendingDeletions('owner-1');
@@ -123,7 +130,7 @@ void main() {
     test('keeps the queue when the client reports a transport failure as code 400', () async {
       when(
         () => mockLocalDeletionRepository.getPending(any()),
-      ).thenAnswer((_) async => [(remoteId: 'remote-1', checksum: 'checksum-1')]);
+      ).thenAnswer((_) async => [(remoteId: 'remote-1', checksum: 'checksum-1', createdAt: settled)]);
       when(
         () => mockAssetApiRepository.delete(any(), any()),
       ).thenThrow(ApiException.withInner(400, 'offline', const SocketException('offline'), StackTrace.empty));
@@ -137,8 +144,8 @@ void main() {
     test('drops intents the server rejects permanently and keeps flushing the rest', () async {
       when(() => mockLocalDeletionRepository.getPending(any())).thenAnswer(
         (_) async => [
-          (remoteId: 'remote-dead', checksum: 'checksum-1'),
-          (remoteId: 'remote-2', checksum: 'checksum-2'),
+          (remoteId: 'remote-dead', checksum: 'checksum-1', createdAt: settled),
+          (remoteId: 'remote-2', checksum: 'checksum-2', createdAt: settled),
         ],
       );
       when(() => mockAssetApiRepository.delete(any(), any())).thenAnswer((invocation) async {
@@ -159,7 +166,7 @@ void main() {
     test('skips the flush and keeps the queue when the server has trash disabled', () async {
       when(
         () => mockLocalDeletionRepository.getPending(any()),
-      ).thenAnswer((_) async => [(remoteId: 'remote-1', checksum: 'checksum-1')]);
+      ).thenAnswer((_) async => [(remoteId: 'remote-1', checksum: 'checksum-1', createdAt: settled)]);
       when(() => mockServerInfoService.getServerFeatures()).thenAnswer(
         (_) async => const ServerFeatures(trash: false, map: false, oauthEnabled: false, passwordLogin: true),
       );
@@ -176,7 +183,7 @@ void main() {
     test('skips the flush and keeps the queue when server features cannot be fetched', () async {
       when(
         () => mockLocalDeletionRepository.getPending(any()),
-      ).thenAnswer((_) async => [(remoteId: 'remote-1', checksum: 'checksum-1')]);
+      ).thenAnswer((_) async => [(remoteId: 'remote-1', checksum: 'checksum-1', createdAt: settled)]);
       when(() => mockServerInfoService.getServerFeatures()).thenAnswer((_) async => null);
 
       await sut.flushPendingDeletions('owner-1');
@@ -186,8 +193,52 @@ void main() {
       verifyNever(() => mockLocalDeletionRepository.deleteByRemoteIds(any()));
     });
 
+    test('keeps intents queued until they settle', () async {
+      when(() => mockLocalDeletionRepository.getPending(any())).thenAnswer(
+        (_) async => [(remoteId: 'remote-fresh', checksum: 'checksum-1', createdAt: DateTime.now())],
+      );
+
+      await sut.flushPendingDeletions('owner-1');
+
+      // A fresh intent may still be in a move/rename settle window. nothing is
+      // sent and the row survives for a later flush.
+      verifyNever(() => mockAssetApiRepository.delete(any(), any()));
+      verifyNever(() => mockRemoteAssetRepository.trash(any()));
+      verifyNever(() => mockLocalDeletionRepository.deleteByRemoteIds(any()));
+    });
+
+    test('flushes only the settled intents and keeps the fresh ones queued', () async {
+      when(() => mockLocalDeletionRepository.getPending(any())).thenAnswer(
+        (_) async => [
+          (remoteId: 'remote-settled', checksum: 'checksum-1', createdAt: settled),
+          (remoteId: 'remote-fresh', checksum: 'checksum-2', createdAt: DateTime.now()),
+        ],
+      );
+
+      await sut.flushPendingDeletions('owner-1');
+
+      verify(() => mockAssetApiRepository.delete(['remote-settled'], false)).called(1);
+      verify(() => mockLocalDeletionRepository.deleteByRemoteIds(['remote-settled'])).called(1);
+      verifyNever(() => mockLocalDeletionRepository.deleteByRemoteIds(['remote-fresh']));
+    });
+
+    test('cancels a fresh intent whose content is still present locally', () async {
+      when(() => mockLocalDeletionRepository.getPending(any())).thenAnswer(
+        (_) async => [(remoteId: 'remote-fresh', checksum: 'checksum-1', createdAt: DateTime.now())],
+      );
+      when(() => mockLocalAssetRepository.getExistingChecksums(any())).thenAnswer((_) async => {'checksum-1'});
+
+      await sut.flushPendingDeletions('owner-1');
+
+      // Moot intents leave the queue without waiting for the settle valve.
+      verify(() => mockLocalDeletionRepository.deleteByRemoteIds(['remote-fresh'])).called(1);
+      verifyNever(() => mockAssetApiRepository.delete(any(), any()));
+    });
+
     test('flushes large queues in chunks', () async {
-      final pending = [for (int i = 0; i < 1001; i++) (remoteId: 'remote-$i', checksum: 'checksum-$i')];
+      final pending = [
+        for (int i = 0; i < 1001; i++) (remoteId: 'remote-$i', checksum: 'checksum-$i', createdAt: settled),
+      ];
       when(() => mockLocalDeletionRepository.getPending(any())).thenAnswer((_) async => pending);
 
       await sut.flushPendingDeletions('owner-1');
@@ -230,7 +281,7 @@ void main() {
     test('flushes the current user pending deletions when enabled and full access', () async {
       when(
         () => mockLocalDeletionRepository.getPending(UserStub.admin.id),
-      ).thenAnswer((_) async => [(remoteId: 'remote-1', checksum: 'checksum-1')]);
+      ).thenAnswer((_) async => [(remoteId: 'remote-1', checksum: 'checksum-1', createdAt: settled)]);
 
       await sut.flush();
 

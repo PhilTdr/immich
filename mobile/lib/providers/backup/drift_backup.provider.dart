@@ -412,3 +412,14 @@ final driftCandidateBackupAlbumInfoProvider = FutureProvider.autoDispose.family<
 ) {
   return ref.read(localAssetRepository).getSourceAlbums(assetId, backupSelection: BackupSelection.selected);
 });
+
+typedef PendingDeletion = ({String remoteId, String? name, String? thumbHash, DateTime createdAt});
+
+final driftPendingDeletionsProvider = StreamProvider.autoDispose<List<PendingDeletion>>((ref) {
+  final user = ref.watch(currentUserProvider);
+  if (user == null) {
+    return Stream.value(const []);
+  }
+
+  return ref.watch(localDeletionRepository).watchPending(user.id);
+});

@@ -8,6 +8,7 @@ const int kLogTruncateLimit = 2000;
 // Sync
 const int kSyncEventBatchSize = 5000;
 const int kFetchLocalAssetsBatchSize = 40000;
+const Duration kLocalDeletionSettleDuration = Duration(minutes: 15);
 
 // Hash batch limits
 final int kBatchHashFileLimit = Platform.isIOS ? 32 : 512;

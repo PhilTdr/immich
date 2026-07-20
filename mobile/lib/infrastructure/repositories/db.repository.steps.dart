@@ -17045,7 +17045,7 @@ final class Schema32 extends i0.VersionedSchema {
       withoutRowId: true,
       isStrict: true,
       tableConstraints: ['PRIMARY KEY(remote_id)'],
-      columns: [_column_225, _column_119, _column_226],
+      columns: [_column_225, _column_119, _column_226, _column_227],
       attachedDatabase: database,
     ),
     alias: null,
@@ -17056,7 +17056,7 @@ final class Schema32 extends i0.VersionedSchema {
       withoutRowId: true,
       isStrict: true,
       tableConstraints: ['PRIMARY KEY(local_id)'],
-      columns: [_column_227],
+      columns: [_column_228],
       attachedDatabase: database,
     ),
     alias: null,
@@ -17123,6 +17123,8 @@ class Shape52 extends i0.VersionedTable {
       columnsByName['checksum']! as i1.GeneratedColumn<String>;
   i1.GeneratedColumn<String> get ownerId =>
       columnsByName['owner_id']! as i1.GeneratedColumn<String>;
+  i1.GeneratedColumn<String> get createdAt =>
+      columnsByName['created_at']! as i1.GeneratedColumn<String>;
 }
 
 i1.GeneratedColumn<String> _column_225(String aliasedName) =>
@@ -17141,6 +17143,14 @@ i1.GeneratedColumn<String> _column_226(String aliasedName) =>
       type: i1.DriftSqlType.string,
       $customConstraints: 'NOT NULL',
     );
+i1.GeneratedColumn<String> _column_227(String aliasedName) =>
+    i1.GeneratedColumn<String>(
+      'created_at',
+      aliasedName,
+      false,
+      type: i1.DriftSqlType.string,
+      $customConstraints: 'NOT NULL',
+    );
 
 class Shape53 extends i0.VersionedTable {
   Shape53({required super.source, required super.alias}) : super.aliased();
@@ -17148,7 +17158,7 @@ class Shape53 extends i0.VersionedTable {
       columnsByName['local_id']! as i1.GeneratedColumn<String>;
 }
 
-i1.GeneratedColumn<String> _column_227(String aliasedName) =>
+i1.GeneratedColumn<String> _column_228(String aliasedName) =>
     i1.GeneratedColumn<String>(
       'local_id',
       aliasedName,
