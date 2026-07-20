@@ -3,6 +3,7 @@ import 'package:drift/drift.dart';
 import 'package:immich_mobile/constants/constants.dart';
 import 'package:immich_mobile/data/db/main/database.dart';
 import 'package:immich_mobile/data/db/main/table/local/deletion.drift.dart';
+import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/infrastructure/repositories/local_deletion.repository.drift.dart';
 
 typedef PendingDeletion = ({String remoteId, String? name, String? thumbHash, DateTime createdAt});
@@ -32,7 +33,7 @@ class LocalDeletionRepository extends DatabaseAccessor<Drift> with $LocalDeletio
   }
 
   /// The remote id and checksum of the backed-up copies of [localIds]: the user's own uploads that are not trashed,
-  /// never partner or external library assets that share a checksum
+  /// hidden or locked, never partner or external library assets that share a checksum
   Future<Map<String, String>> getBackedUp(String ownerId, Iterable<String> localIds) async {
     final result = <String, String>{};
     for (final slice in localIds.toSet().slices(kDriftMaxChunk)) {
@@ -44,7 +45,8 @@ class LocalDeletionRepository extends DatabaseAccessor<Drift> with $LocalDeletio
             _db.remoteAssetEntity.checksum.equalsExp(_db.localAssetEntity.checksum) &
                 _db.remoteAssetEntity.ownerId.equals(ownerId) &
                 _db.remoteAssetEntity.deletedAt.isNull() &
-                _db.remoteAssetEntity.libraryId.isNull(),
+                _db.remoteAssetEntity.libraryId.isNull() &
+                _db.remoteAssetEntity.visibility.isNotInValues(const [AssetVisibility.hidden, AssetVisibility.locked]),
             useColumns: false,
           ),
         ])
@@ -171,8 +173,9 @@ class LocalDeletionRepository extends DatabaseAccessor<Drift> with $LocalDeletio
         FROM local_asset_entity la
         INNER JOIN remote_asset_entity ra ON ra.checksum = la.checksum
         WHERE ra.owner_id = ? AND ra.deleted_at IS NULL AND ra.library_id IS NULL
+          AND ra.visibility NOT IN (?, ?)
       ''',
-        [ownerId],
+        [ownerId, AssetVisibility.hidden.index, AssetVisibility.locked.index],
       );
     });
   }

@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:immich_mobile/constants/constants.dart';
 import 'package:immich_mobile/data/db/main/table/local/deletion.drift.dart';
+import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/infrastructure/repositories/local_deletion.repository.dart';
 
 import '../repository_context.dart';
@@ -89,6 +90,15 @@ void main() {
       await ctx.newLocalAsset(id: 'local-1', checksum: 'checksum-1');
 
       expect(await sut.getBackedUp(userId, ['local-1']), isEmpty);
+    });
+
+    test('ignores hidden and locked remotes', () async {
+      await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1', visibility: AssetVisibility.hidden);
+      await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-2', visibility: AssetVisibility.locked);
+      await ctx.newLocalAsset(id: 'local-1', checksum: 'checksum-1');
+      await ctx.newLocalAsset(id: 'local-2', checksum: 'checksum-2');
+
+      expect(await sut.getBackedUp(userId, ['local-1', 'local-2']), isEmpty);
     });
 
     test('resolves only the uploaded remote when an external-library copy also matches', () async {
@@ -260,15 +270,19 @@ void main() {
       expect(await excludedLocalIds(), {local.id});
     });
 
-    test('ignores trashed, partner-owned, and external-library remotes', () async {
+    test('ignores trashed, partner-owned, external-library, hidden, and locked remotes', () async {
       await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-trashed', deletedAt: DateTime(2024));
       final partner = await ctx.newUser();
       await ctx.newRemoteAsset(ownerId: partner.id, checksum: 'checksum-partner');
       await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-library', libraryId: 'library-1');
+      await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-hidden', visibility: AssetVisibility.hidden);
+      await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-locked', visibility: AssetVisibility.locked);
       final locals = [
         await ctx.newLocalAsset(checksum: 'checksum-trashed'),
         await ctx.newLocalAsset(checksum: 'checksum-partner'),
         await ctx.newLocalAsset(checksum: 'checksum-library'),
+        await ctx.newLocalAsset(checksum: 'checksum-hidden'),
+        await ctx.newLocalAsset(checksum: 'checksum-locked'),
       ];
 
       await sut.snapshotBackedUpAssets(userId);
