@@ -39,16 +39,12 @@ class DriftLocalDeletionRepository extends DriftDatabaseRepository {
 
   Future<List<({String remoteId, String checksum, DateTime createdAt})>> getPending(String ownerId) {
     final query = _db.localDeletionEntity.select()..where((row) => row.ownerId.equals(ownerId));
-    return query
-        .map((row) => (remoteId: row.remoteId, checksum: row.checksum, createdAt: row.createdAt))
-        .get();
+    return query.map((row) => (remoteId: row.remoteId, checksum: row.checksum, createdAt: row.createdAt)).get();
   }
 
   /// Watches the pending deletions of [ownerId] together with their mirrored
   /// remote asset.
-  Stream<List<({String remoteId, String? name, String? thumbHash, DateTime createdAt})>> watchPending(
-    String ownerId,
-  ) {
+  Stream<List<({String remoteId, String? name, String? thumbHash, DateTime createdAt})>> watchPending(String ownerId) {
     final deletion = _db.localDeletionEntity;
     final remote = _db.remoteAssetEntity;
     final query = _db.selectOnly(deletion).join([leftOuterJoin(remote, remote.id.equalsExp(deletion.remoteId))])

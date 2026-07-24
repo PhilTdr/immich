@@ -156,5 +156,7 @@ class LocalDeletionFlushService {
   }
 
   static bool _isServerRejection(ApiException e) =>
-      e.code == 400 && e.innerException == null && (e.message?.contains("Not found or no asset.delete access") ?? false);
+      e.code == 400 &&
+      e.innerException == null &&
+      (e.message?.contains("Not found or no asset.delete access") ?? false);
 }
