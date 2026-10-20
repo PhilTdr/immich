@@ -125,4 +125,12 @@ class NativeSyncApiImpl30(context: Context) : NativeSyncApiImplBase(context), Na
 
     return result.mapValues { it.value.toList() }
   }
+
+  override fun getExistingAssetIds(assetIds: List<String>): List<String> {
+    // A volume that was mounted at the last sync and is missing now was ejected, its assets are not deleted
+    if (!MediaStore.getExternalVolumeNames(ctx).containsAll(getSavedGenerationMap().keys)) {
+      return assetIds
+    }
+    return super.getExistingAssetIds(assetIds)
+  }
 }
