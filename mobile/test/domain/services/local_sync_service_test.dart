@@ -91,12 +91,12 @@ void main() {
     await Store.put(StoreKey.currentUser, UserStub.admin);
     when(() => mockLocalDeletionRepository.upsert(any(), any())).thenAnswer((_) async {});
     when(() => mockLocalDeletionRepository.getExcluded(any())).thenAnswer((_) async => <String>{});
-    when(() => mockLocalDeletionRepository.unmarkExcluded(any())).thenAnswer((_) async {});
-    when(() => mockLocalDeletionRepository.snapshotBackedUpAssets(any())).thenAnswer((_) async {});
+    when(() => mockLocalDeletionRepository.consumeExcluded(any())).thenAnswer((_) async {});
+    when(() => mockLocalDeletionRepository.snapshotBackedUpAssets(any())).thenAnswer((_) async => 1);
     when(
-      () => mockLocalDeletionRepository.getSnapshotDeletionCandidates(),
+      () => mockLocalDeletionRepository.getSnapshotDeletionCandidates(any()),
     ).thenAnswer((_) async => (candidates: <({String localId, String remoteId, String checksum})>[], total: 0));
-    when(() => mockLocalDeletionRepository.clearSnapshotAndConsumeExclusions()).thenAnswer((_) async {});
+    when(() => mockLocalDeletionRepository.clearSnapshotAndConsumeExclusions(any())).thenAnswer((_) async {});
     when(() => mockNativeSyncApi.getExistingAssetIds(any())).thenAnswer((_) async => <String>[]);
     when(() => mockLocalDeletionRepository.getBackedUp(any(), any())).thenAnswer((_) async => {});
 
@@ -374,7 +374,7 @@ void main() {
           deletes: any(named: 'deletes'),
           assetAlbums: any(named: 'assetAlbums'),
         ),
-        () => mockLocalDeletionRepository.unmarkExcluded(any()),
+        () => mockLocalDeletionRepository.consumeExcluded(any()),
       ]);
     });
   });
@@ -392,7 +392,7 @@ void main() {
       await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletions, true);
 
       stubFullSync();
-      when(() => mockLocalDeletionRepository.getSnapshotDeletionCandidates()).thenAnswer(
+      when(() => mockLocalDeletionRepository.getSnapshotDeletionCandidates(any())).thenAnswer(
         (_) async => (candidates: [(localId: 'local-1', remoteId: 'remote-1', checksum: 'checksum-1')], total: 1),
       );
 
@@ -401,10 +401,10 @@ void main() {
       verifyInOrder([
         () => mockLocalDeletionRepository.snapshotBackedUpAssets(UserStub.admin.id),
         () => mockNativeSyncApi.getAlbums(),
-        () => mockLocalDeletionRepository.getSnapshotDeletionCandidates(),
+        () => mockLocalDeletionRepository.getSnapshotDeletionCandidates(1),
         () => mockNativeSyncApi.getExistingAssetIds(['local-1']),
         () => mockLocalDeletionRepository.upsert(UserStub.admin.id, {'remote-1': 'checksum-1'}),
-        () => mockLocalDeletionRepository.clearSnapshotAndConsumeExclusions(),
+        () => mockLocalDeletionRepository.clearSnapshotAndConsumeExclusions(1),
         () => mockNativeSyncApi.checkpointSync(),
       ]);
     });
@@ -415,7 +415,7 @@ void main() {
       await sut.fullSync();
 
       verifyNever(() => mockLocalDeletionRepository.snapshotBackedUpAssets(any()));
-      verifyNever(() => mockLocalDeletionRepository.getSnapshotDeletionCandidates());
+      verifyNever(() => mockLocalDeletionRepository.getSnapshotDeletionCandidates(any()));
     });
 
     test('skips snapshot and detection when photo access is limited', () async {
@@ -426,7 +426,7 @@ void main() {
       await sut.fullSync();
 
       verifyNever(() => mockLocalDeletionRepository.snapshotBackedUpAssets(any()));
-      verifyNever(() => mockLocalDeletionRepository.getSnapshotDeletionCandidates());
+      verifyNever(() => mockLocalDeletionRepository.getSnapshotDeletionCandidates(any()));
     });
 
     test('still detects and queues deletions when cancelled', () async {
@@ -446,7 +446,7 @@ void main() {
       );
 
       stubFullSync();
-      when(() => mockLocalDeletionRepository.getSnapshotDeletionCandidates()).thenAnswer(
+      when(() => mockLocalDeletionRepository.getSnapshotDeletionCandidates(any())).thenAnswer(
         (_) async => (candidates: [(localId: 'local-1', remoteId: 'remote-1', checksum: 'checksum-1')], total: 1),
       );
 
@@ -454,7 +454,7 @@ void main() {
 
       // The detected deletions are persisted for the next run.
       verify(() => mockLocalDeletionRepository.snapshotBackedUpAssets(UserStub.admin.id)).called(1);
-      verify(() => mockLocalDeletionRepository.getSnapshotDeletionCandidates()).called(1);
+      verify(() => mockLocalDeletionRepository.getSnapshotDeletionCandidates(any())).called(1);
       verify(() => mockLocalDeletionRepository.upsert(UserStub.admin.id, {'remote-1': 'checksum-1'})).called(1);
     });
 
@@ -462,7 +462,7 @@ void main() {
       await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletions, true);
 
       stubFullSync();
-      when(() => mockLocalDeletionRepository.getSnapshotDeletionCandidates()).thenAnswer(
+      when(() => mockLocalDeletionRepository.getSnapshotDeletionCandidates(any())).thenAnswer(
         (_) async => (
           candidates: [
             (localId: 'hidden-1', remoteId: 'remote-1', checksum: 'checksum-1'),
@@ -477,7 +477,7 @@ void main() {
       await sut.fullSync();
 
       verify(() => mockLocalDeletionRepository.upsert(UserStub.admin.id, {'remote-2': 'checksum-2'})).called(1);
-      verify(() => mockLocalDeletionRepository.clearSnapshotAndConsumeExclusions()).called(1);
+      verify(() => mockLocalDeletionRepository.clearSnapshotAndConsumeExclusions(any())).called(1);
     });
 
     test('skips the deletion sync when almost every backed-up asset vanished at once', () async {
@@ -488,7 +488,7 @@ void main() {
         for (int i = 0; i < 100; i++) (localId: 'local-$i', remoteId: 'remote-$i', checksum: 'checksum-$i'),
       ];
       when(
-        () => mockLocalDeletionRepository.getSnapshotDeletionCandidates(),
+        () => mockLocalDeletionRepository.getSnapshotDeletionCandidates(any()),
       ).thenAnswer((_) async => (candidates: candidates, total: 100));
 
       await sut.fullSync();
@@ -496,7 +496,7 @@ void main() {
       // A near-total wipe is a device state change, not deletions. Nothing is
       // queued, but the snapshot is still cleared for the next run.
       verifyNever(() => mockLocalDeletionRepository.upsert(any(), any()));
-      verify(() => mockLocalDeletionRepository.clearSnapshotAndConsumeExclusions()).called(1);
+      verify(() => mockLocalDeletionRepository.clearSnapshotAndConsumeExclusions(any())).called(1);
     });
   });
 

@@ -27,6 +27,8 @@ const String _kSyncCancelledCode = "SYNC_CANCELLED";
 const int _kDeletionGuardMinAssets = 50;
 const double _kDeletionGuardMaxVanishedRatio = 0.9;
 
+typedef _DeletionSnapshot = ({String ownerId, int id});
+
 class LocalSyncService {
   final LocalAlbumRepository _localAlbumRepository;
   final NativeSyncApi _nativeSyncApi;
@@ -105,7 +107,7 @@ class LocalSyncService {
       );
 
       if (ownerId != null) {
-        await _localDeletionRepository.unmarkExcluded(excluded);
+        await _localDeletionRepository.consumeExcluded(excluded);
       }
 
       final dbAlbums = await _localAlbumRepository.getAll();
@@ -161,10 +163,7 @@ class LocalSyncService {
       final Stopwatch stopwatch = Stopwatch()..start();
 
       // Snapshot before reconciliation so deletions can be detected afterwards.
-      final ownerId = await _deletionSyncOwner();
-      if (ownerId != null) {
-        await _localDeletionRepository.snapshotBackedUpAssets(ownerId);
-      }
+      final snapshot = await _takeDeletionSnapshot();
 
       final deviceAlbums = await _nativeSyncApi.getAlbums();
       final dbAlbums = await _localAlbumRepository.getAll(sortBy: {SortLocalAlbumsBy.id});
@@ -178,8 +177,8 @@ class LocalSyncService {
         onlySecond: addAlbum,
       );
 
-      if (ownerId != null) {
-        await _detectAndQueueDeletionsFromSnapshot(ownerId);
+      if (snapshot != null) {
+        await _detectAndQueueDeletionsFromSnapshot(snapshot);
       }
 
       await _nativeSyncApi.checkpointSync();
@@ -411,11 +410,19 @@ class LocalSyncService {
     return _currentUserId;
   }
 
+  Future<_DeletionSnapshot?> _takeDeletionSnapshot() async {
+    final ownerId = await _deletionSyncOwner();
+    if (ownerId == null) {
+      return null;
+    }
+    return (ownerId: ownerId, id: await _localDeletionRepository.snapshotBackedUpAssets(ownerId));
+  }
+
   /// Detects deletions from the pre-reconciliation snapshot, re-verifying each
   /// candidate against the device before queuing so hidden or moved assets that
   /// merely lost their local row are not mistaken for deletions.
-  Future<void> _detectAndQueueDeletionsFromSnapshot(String ownerId) async {
-    final result = await _localDeletionRepository.getSnapshotDeletionCandidates();
+  Future<void> _detectAndQueueDeletionsFromSnapshot(_DeletionSnapshot snapshot) async {
+    final result = await _localDeletionRepository.getSnapshotDeletionCandidates(snapshot.id);
     try {
       final candidates = result.candidates;
       if (candidates.isEmpty) {
@@ -436,15 +443,15 @@ class LocalSyncService {
         return;
       }
 
-      await _localDeletionRepository.upsert(ownerId, {for (final c in gone) c.remoteId: c.checksum});
+      await _localDeletionRepository.upsert(snapshot.ownerId, {for (final c in gone) c.remoteId: c.checksum});
     } finally {
-      await _localDeletionRepository.clearSnapshotAndConsumeExclusions();
+      await _localDeletionRepository.clearSnapshotAndConsumeExclusions(snapshot.id);
     }
   }
 
   /// Queues the backed-up assets among [deletedIds] for a server move-to-trash
   /// and returns the app-initiated deletions that were skipped. Callers must
-  /// [LocalDeletionRepository.unmarkExcluded] those once the local rows
+  /// [LocalDeletionRepository.consumeExcluded] those once the local rows
   /// are gone.
   @visibleForTesting
   Future<Set<String>> recordLocallyDeletedFromDelta(List<String> deletedIds, String ownerId) async {
