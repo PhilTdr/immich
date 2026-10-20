@@ -1,6 +1,7 @@
 package app.alextran.immich.sync
 
 import android.annotation.SuppressLint
+import android.content.ContentResolver
 import android.content.ContentUris
 import android.content.Context
 import android.database.Cursor
@@ -48,6 +49,14 @@ open class NativeSyncApiImplBase(context: Context) : ImmichPlugin(), ActivityAwa
   private var hashTask: Job? = null
   private var syncJob: Job? = null
   private val mediaTrashDelegate = MediaTrashDelegate(ctx)
+
+  // The volumes mounted when the current sync listed the albums. The rows of a volume ejected after that survive
+  // this sync, so the checkpoint has to keep the volume for the next sync to tell the ejection from deletions
+  @Volatile
+  protected var volumesAtAlbumQuery: Set<String> = emptySet()
+    private set
+
+  protected open fun getMountedVolumes(): Set<String> = emptySet()
 
   companion object {
     private const val MAX_CONCURRENT_HASH_OPERATIONS = 16
@@ -307,6 +316,7 @@ open class NativeSyncApiImplBase(context: Context) : ImmichPlugin(), ActivityAwa
   }
 
   private suspend fun getAlbums(): List<PlatformAlbum> {
+    volumesAtAlbumQuery = getMountedVolumes()
     val albums = mutableListOf<PlatformAlbum>()
     val albumsCount = mutableMapOf<String, Int>()
 
@@ -553,7 +563,7 @@ open class NativeSyncApiImplBase(context: Context) : ImmichPlugin(), ActivityAwa
     return emptyList()
   }
 
-  fun getExistingAssetIds(assetIds: List<String>): List<String> {
+  open fun getExistingAssetIds(assetIds: List<String>): List<String> {
     if (assetIds.isEmpty()) {
       return emptyList()
     }
@@ -561,11 +571,19 @@ open class NativeSyncApiImplBase(context: Context) : ImmichPlugin(), ActivityAwa
     val existing = mutableListOf<String>()
     for (chunk in assetIds.chunked(SQLITE_MAX_VARIABLE_NUMBER)) {
       val placeholders = chunk.joinToString(",") { "?" }
-      val cursor = getCursor(
-        MediaStore.VOLUME_EXTERNAL,
-        "${MediaStore.MediaColumns._ID} IN ($placeholders)",
-        chunk.toTypedArray(),
-        arrayOf(MediaStore.MediaColumns._ID)
+      val queryArgs = Bundle().apply {
+        putString(ContentResolver.QUERY_ARG_SQL_SELECTION, "${MediaStore.MediaColumns._ID} IN ($placeholders)")
+        putStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, chunk.toTypedArray())
+        // Assets on an ejected volume are gone from the queries, but not deleted
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+          putBoolean(MediaStore.QUERY_ARG_INCLUDE_RECENTLY_UNMOUNTED_VOLUMES, true)
+        }
+      }
+      val cursor = ctx.contentResolver.query(
+        MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL),
+        arrayOf(MediaStore.MediaColumns._ID),
+        queryArgs,
+        null
       ) ?: error("MediaStore asset existence query failed")
       cursor.use {
         val idColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
