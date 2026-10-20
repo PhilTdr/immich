@@ -303,6 +303,7 @@ class _SyncLocalDeletionsButton extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final deletionRepository = ref.watch(driftProvider).localDeletionRepository;
     final hasFullAccess = ref.watch(galleryPermissionNotifier) == .granted;
+    final isEnabled = ref.watch(appConfigProvider.select((c) => c.backup.syncLocalDeletions));
     return _BackupSwitchTile(
       metadataKey: SettingsKey.backupSyncLocalDeletions,
       selector: (c) => c.backup.syncLocalDeletions,
@@ -310,10 +311,10 @@ class _SyncLocalDeletionsButton extends ConsumerWidget {
       subtitle: hasFullAccess
           ? context.t.sync_local_deletions_setting_description
           : context.t.sync_local_deletions_setting_description_without_permission,
-      enabled: hasFullAccess,
+      enabled: hasFullAccess || isEnabled,
       onChanged: (enabled) {
         if (!enabled) {
-          unawaited(deletionRepository.deleteAll());
+          unawaited(deletionRepository.clearQueue());
         }
       },
     );

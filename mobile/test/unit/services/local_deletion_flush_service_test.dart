@@ -197,6 +197,20 @@ void main() {
         expect((calls[0] as List<String>).length, 1000);
         expect((calls[1] as List<String>).length, 1);
       });
+
+      test('stops between chunks when the deletion sync is turned off', () async {
+        final pending = [for (int i = 0; i < 1001; i++) 'remote-$i'];
+        when(
+          () => mocks.localDeletion.repo.getPending(any(), settledBefore: any(named: 'settledBefore')),
+        ).thenAnswer((_) async => pending);
+        when(() => services.asset.service.trash(any())).thenAnswer((_) async {
+          await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletions, false);
+        });
+
+        await sut.flushPendingDeletions('owner-1');
+
+        verify(() => services.asset.service.trash(any())).called(1);
+      });
     });
 
     group('flush', () {
