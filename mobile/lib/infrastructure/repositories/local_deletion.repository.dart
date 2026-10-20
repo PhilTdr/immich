@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'package:collection/collection.dart';
 import 'package:drift/drift.dart';
 import 'package:immich_mobile/constants/constants.dart';
@@ -5,6 +7,9 @@ import 'package:immich_mobile/data/db/main/database.dart';
 import 'package:immich_mobile/data/db/main/table/local/deletion.drift.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/infrastructure/repositories/local_deletion.repository.drift.dart';
+
+const Duration _kStaleSnapshotAge = Duration(hours: 1);
+const _kNotInAnySnapshot = CustomExpression<bool>('local_id NOT IN (SELECT local_id FROM local_deletion_snapshot)');
 
 typedef PendingDeletion = ({String remoteId, String? name, String? thumbHash, DateTime createdAt});
 
@@ -152,6 +157,22 @@ class LocalDeletionRepository extends DatabaseAccessor<Drift> with $LocalDeletio
     }
   }
 
+  /// Drops the exclusions of [localIds] whose rows are gone, unless a snapshot still needs them to skip the asset
+  Future<void> consumeExcluded(Iterable<String> localIds) async {
+    if (localIds.isEmpty) {
+      return;
+    }
+
+    await _db.transaction(() async {
+      await _createSnapshotTable();
+      for (final slice in localIds.toSet().slices(kDriftMaxChunk)) {
+        await (_db.delete(
+          _db.localDeletionExclusionEntity,
+        )..where((row) => row.localId.isIn(slice) & _kNotInAnySnapshot)).go();
+      }
+    });
+  }
+
   /// The subset of [localIds] that are marked as excluded
   Future<Set<String>> getExcluded(Iterable<String> localIds) async {
     final result = <String>{};
@@ -165,38 +186,58 @@ class LocalDeletionRepository extends DatabaseAccessor<Drift> with $LocalDeletio
   }
 
   /// Captures the backed-up assets of [ownerId] into a temp table, so deletions can be detected after the
-  /// reconciliation removed their rows
-  Future<void> snapshotBackedUpAssets(String ownerId) {
+  /// reconciliation removed their rows. Every engine shares the connection, so each sync gets its own snapshot id
+  Future<int> snapshotBackedUpAssets(String ownerId) {
     return _db.transaction(() async {
       await _createSnapshotTable();
-      await _db.customStatement('DELETE FROM local_deletion_snapshot');
+      // The id is the creation time, so the snapshots of syncs that never reached their detection expire
+      final now = DateTime.now().microsecondsSinceEpoch;
+      await _db.customStatement('DELETE FROM local_deletion_snapshot WHERE snapshot_id < ?', [
+        now - _kStaleSnapshotAge.inMicroseconds,
+      ]);
+      final last = await _db
+          .customSelect('SELECT COALESCE(MAX(snapshot_id), 0) AS id FROM local_deletion_snapshot')
+          .getSingle();
+      final snapshotId = max(now, last.read<int>('id') + 1);
       await _db.customStatement(
         '''
-        INSERT INTO local_deletion_snapshot (local_id, remote_id, checksum)
-        SELECT la.id, ra.id, la.checksum
+        INSERT INTO local_deletion_snapshot (snapshot_id, local_id, remote_id, checksum)
+        SELECT ?, la.id, ra.id, la.checksum
         FROM local_asset_entity la
         INNER JOIN remote_asset_entity ra ON ra.checksum = la.checksum
         WHERE ra.owner_id = ? AND ra.deleted_at IS NULL AND ra.library_id IS NULL
           AND ra.visibility NOT IN (?, ?)
       ''',
-        [ownerId, AssetVisibility.hidden.index, AssetVisibility.locked.index],
+        [snapshotId, ownerId, AssetVisibility.hidden.index, AssetVisibility.locked.index],
       );
+      return snapshotId;
     });
   }
 
-  /// The snapshot rows whose local asset is gone and that are not excluded, with the snapshot size so the caller can
-  /// tell a whole volume disappearing apart from deletions
+  /// The rows of [snapshotId] whose local asset is gone and that are not excluded, with the snapshot size so the
+  /// caller can tell a whole volume disappearing apart from deletions
   Future<({List<({String localId, String remoteId, String checksum})> candidates, int total})>
-  getSnapshotDeletionCandidates() {
+  getSnapshotDeletionCandidates(int snapshotId) {
     return _db.transaction(() async {
       await _createSnapshotTable();
-      final rows = await _db.customSelect('''
+      final rows = await _db
+          .customSelect(
+            '''
         SELECT s.local_id AS local_id, s.remote_id AS remote_id, s.checksum AS checksum
         FROM local_deletion_snapshot s
-        WHERE NOT EXISTS (SELECT 1 FROM local_asset_entity la WHERE la.id = s.local_id)
+        WHERE s.snapshot_id = ?
+          AND NOT EXISTS (SELECT 1 FROM local_asset_entity la WHERE la.id = s.local_id)
           AND NOT EXISTS (SELECT 1 FROM local_deletion_exclusion_entity ex WHERE ex.local_id = s.local_id)
-      ''').get();
-      final total = await _db.customSelect('SELECT COUNT(*) AS c FROM local_deletion_snapshot').getSingle();
+      ''',
+            variables: [Variable.withInt(snapshotId)],
+          )
+          .get();
+      final total = await _db
+          .customSelect(
+            'SELECT COUNT(*) AS c FROM local_deletion_snapshot WHERE snapshot_id = ?',
+            variables: [Variable.withInt(snapshotId)],
+          )
+          .getSingle();
       final candidates = rows
           .map(
             (r) => (
@@ -210,22 +251,25 @@ class LocalDeletionRepository extends DatabaseAccessor<Drift> with $LocalDeletio
     });
   }
 
-  /// Drops the exclusions of assets that no longer exist and clears the snapshot
-  Future<void> clearSnapshotAndConsumeExclusions() {
+  /// Clears [snapshotId] and drops the exclusions of assets that no longer exist, unless another snapshot still
+  /// needs them to skip the asset
+  Future<void> clearSnapshotAndConsumeExclusions(int snapshotId) {
     return _db.transaction(() async {
       await _createSnapshotTable();
+      await _db.customStatement('DELETE FROM local_deletion_snapshot WHERE snapshot_id = ?', [snapshotId]);
       await (_db.delete(_db.localDeletionExclusionEntity)..where(
-            (row) => row.localId.isNotInQuery(_db.localAssetEntity.selectOnly()..addColumns([_db.localAssetEntity.id])),
+            (row) =>
+                row.localId.isNotInQuery(_db.localAssetEntity.selectOnly()..addColumns([_db.localAssetEntity.id])) &
+                _kNotInAnySnapshot,
           ))
           .go();
-      await _db.customStatement('DELETE FROM local_deletion_snapshot');
     });
   }
 
   Future<void> _createSnapshotTable() {
     return _db.customStatement(
-      'CREATE TEMP TABLE IF NOT EXISTS local_deletion_snapshot '
-      '(local_id TEXT NOT NULL PRIMARY KEY, remote_id TEXT NOT NULL, checksum TEXT NOT NULL)',
+      'CREATE TEMP TABLE IF NOT EXISTS local_deletion_snapshot (snapshot_id INTEGER NOT NULL, '
+      'local_id TEXT NOT NULL, remote_id TEXT NOT NULL, checksum TEXT NOT NULL, PRIMARY KEY (snapshot_id, local_id))',
     );
   }
 

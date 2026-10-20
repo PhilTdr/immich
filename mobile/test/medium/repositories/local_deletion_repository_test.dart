@@ -227,9 +227,9 @@ void main() {
       final remote = await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1');
       final local = await ctx.newLocalAsset(checksum: 'checksum-1');
 
-      await sut.snapshotBackedUpAssets(userId);
+      final snapshotId = await sut.snapshotBackedUpAssets(userId);
       await ctx.db.managers.localAssetEntity.filter((r) => r.id.equals(local.id)).delete();
-      final result = await sut.getSnapshotDeletionCandidates();
+      final result = await sut.getSnapshotDeletionCandidates(snapshotId);
 
       expect(result.total, 1);
       expect(result.candidates, [(localId: local.id, remoteId: remote.id, checksum: 'checksum-1')]);
@@ -239,8 +239,8 @@ void main() {
       await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1');
       await ctx.newLocalAsset(checksum: 'checksum-1');
 
-      await sut.snapshotBackedUpAssets(userId);
-      final result = await sut.getSnapshotDeletionCandidates();
+      final snapshotId = await sut.snapshotBackedUpAssets(userId);
+      final result = await sut.getSnapshotDeletionCandidates(snapshotId);
 
       expect(result.candidates, isEmpty);
       expect(result.total, 1);
@@ -251,10 +251,10 @@ void main() {
       final local = await ctx.newLocalAsset(checksum: 'checksum-1');
       await sut.markExcluded([local.id]);
 
-      await sut.snapshotBackedUpAssets(userId);
+      final snapshotId = await sut.snapshotBackedUpAssets(userId);
       await ctx.db.managers.localAssetEntity.filter((r) => r.id.equals(local.id)).delete();
-      final result = await sut.getSnapshotDeletionCandidates();
-      await sut.clearSnapshotAndConsumeExclusions();
+      final result = await sut.getSnapshotDeletionCandidates(snapshotId);
+      await sut.clearSnapshotAndConsumeExclusions(snapshotId);
 
       expect(result.candidates, isEmpty);
       expect(await excludedLocalIds(), isEmpty);
@@ -264,8 +264,8 @@ void main() {
       final local = await ctx.newLocalAsset(checksum: 'checksum-1');
       await sut.markExcluded([local.id]);
 
-      await sut.snapshotBackedUpAssets(userId);
-      await sut.clearSnapshotAndConsumeExclusions();
+      final snapshotId = await sut.snapshotBackedUpAssets(userId);
+      await sut.clearSnapshotAndConsumeExclusions(snapshotId);
 
       expect(await excludedLocalIds(), {local.id});
     });
@@ -285,11 +285,11 @@ void main() {
         await ctx.newLocalAsset(checksum: 'checksum-locked'),
       ];
 
-      await sut.snapshotBackedUpAssets(userId);
+      final snapshotId = await sut.snapshotBackedUpAssets(userId);
       for (final local in locals) {
         await ctx.db.managers.localAssetEntity.filter((r) => r.id.equals(local.id)).delete();
       }
-      final result = await sut.getSnapshotDeletionCandidates();
+      final result = await sut.getSnapshotDeletionCandidates(snapshotId);
 
       expect(result.candidates, isEmpty);
     });
@@ -297,10 +297,68 @@ void main() {
     test('detection without a prior snapshot returns nothing', () async {
       await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1');
 
-      final result = await sut.getSnapshotDeletionCandidates();
+      final result = await sut.getSnapshotDeletionCandidates(1);
 
       expect(result.candidates, isEmpty);
       expect(result.total, 0);
+    });
+
+    test('keeps the snapshots of concurrent syncs apart', () async {
+      final remote = await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1');
+      final local = await ctx.newLocalAsset(checksum: 'checksum-1');
+      await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-2');
+      await ctx.newLocalAsset(checksum: 'checksum-2');
+
+      final first = await sut.snapshotBackedUpAssets(userId);
+      await ctx.db.managers.localAssetEntity.filter((r) => r.id.equals(local.id)).delete();
+      final second = await sut.snapshotBackedUpAssets(userId);
+      await sut.clearSnapshotAndConsumeExclusions(second);
+      final result = await sut.getSnapshotDeletionCandidates(first);
+
+      expect(result.total, 2);
+      expect(result.candidates, [(localId: local.id, remoteId: remote.id, checksum: 'checksum-1')]);
+    });
+
+    test('keeps exclusions that another snapshot still needs', () async {
+      await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1');
+      final local = await ctx.newLocalAsset(checksum: 'checksum-1');
+      await sut.markExcluded([local.id]);
+
+      final first = await sut.snapshotBackedUpAssets(userId);
+      final second = await sut.snapshotBackedUpAssets(userId);
+      await ctx.db.managers.localAssetEntity.filter((r) => r.id.equals(local.id)).delete();
+      await sut.clearSnapshotAndConsumeExclusions(first);
+
+      expect(await excludedLocalIds(), {local.id});
+      expect((await sut.getSnapshotDeletionCandidates(second)).candidates, isEmpty);
+
+      await sut.clearSnapshotAndConsumeExclusions(second);
+
+      expect(await excludedLocalIds(), isEmpty);
+    });
+
+    test('consumeExcluded keeps exclusions that a snapshot still needs', () async {
+      await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1');
+      final local = await ctx.newLocalAsset(checksum: 'checksum-1');
+      await sut.markExcluded([local.id, 'local-other']);
+
+      final snapshotId = await sut.snapshotBackedUpAssets(userId);
+      await ctx.db.managers.localAssetEntity.filter((r) => r.id.equals(local.id)).delete();
+      await sut.consumeExcluded([local.id, 'local-other']);
+
+      expect(await excludedLocalIds(), {local.id});
+      expect((await sut.getSnapshotDeletionCandidates(snapshotId)).candidates, isEmpty);
+    });
+
+    test('drops the snapshots of syncs that never reached their detection', () async {
+      await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1');
+      await ctx.newLocalAsset(checksum: 'checksum-1');
+      await sut.snapshotBackedUpAssets(userId);
+      await ctx.db.customStatement('UPDATE local_deletion_snapshot SET snapshot_id = 1');
+
+      await sut.snapshotBackedUpAssets(userId);
+
+      expect((await sut.getSnapshotDeletionCandidates(1)).total, 0);
     });
   });
 
