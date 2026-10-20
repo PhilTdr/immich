@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:immich_mobile/constants/enums.dart';
 import 'package:immich_mobile/data/db/main/database.dart';
+import 'package:immich_mobile/domain/models/album/local_album.model.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/domain/models/settings_key.dart';
 import 'package:immich_mobile/domain/models/store.model.dart';
@@ -299,23 +300,30 @@ void main() {
     });
   });
 
-  group('LocalSyncService - delta path', () {
-    void stubDeltaSync(List<String> deletes) {
-      when(() => mockNativeSyncApi.getMediaChanges()).thenAnswer(
-        (_) async => SyncDelta(hasChanges: true, updates: const [], deletes: deletes, assetAlbums: const {}),
-      );
-      when(() => mockNativeSyncApi.getAlbums()).thenAnswer((_) async => const []);
-      when(() => mockLocalAlbumRepository.updateAll(any())).thenAnswer((_) async {});
-      when(
-        () => mockLocalAlbumRepository.processDelta(
-          updates: any(named: 'updates'),
-          deletes: any(named: 'deletes'),
-          assetAlbums: any(named: 'assetAlbums'),
-        ),
-      ).thenAnswer((_) async {});
-      when(() => mockLocalAlbumRepository.getAll()).thenAnswer((_) async => const []);
-      when(() => mockNativeSyncApi.checkpointSync()).thenAnswer((_) async {});
-    }
+  void stubDeltaSync(List<String> deletes, {List<LocalAlbum> albums = const []}) {
+    when(
+      () => mockNativeSyncApi.getMediaChanges(),
+    ).thenAnswer((_) async => SyncDelta(hasChanges: true, updates: const [], deletes: deletes, assetAlbums: const {}));
+    when(() => mockNativeSyncApi.getAlbums()).thenAnswer((_) async => const []);
+    when(() => mockLocalAlbumRepository.updateAll(any())).thenAnswer((_) async {});
+    when(
+      () => mockLocalAlbumRepository.processDelta(
+        updates: any(named: 'updates'),
+        deletes: any(named: 'deletes'),
+        assetAlbums: any(named: 'assetAlbums'),
+      ),
+    ).thenAnswer((_) async {});
+    when(() => mockLocalAlbumRepository.getAll()).thenAnswer((_) async => albums);
+    when(() => mockNativeSyncApi.getAssetIdsForAlbum(any())).thenAnswer((_) async => const []);
+    when(() => mockLocalAlbumRepository.syncDeletes(any(), any())).thenAnswer((_) async {});
+    when(() => mockNativeSyncApi.checkpointSync()).thenAnswer((_) async {});
+  }
+
+  group('LocalSyncService - iOS delta path', () {
+    setUp(() {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      addTearDown(() => debugDefaultTargetPlatformOverride = TargetPlatform.android);
+    });
 
     test('does nothing when the feature is disabled', () async {
       stubDeltaSync(const ['local-1']);
@@ -376,6 +384,98 @@ void main() {
         ),
         () => mockLocalDeletionRepository.consumeExcluded(any()),
       ]);
+    });
+  });
+
+  group('LocalSyncService - Android delta path', () {
+    final album = LocalAlbum(id: 'album-1', name: 'Camera', updatedAt: DateTime(2026));
+
+    void stubCandidates() {
+      when(() => mockLocalDeletionRepository.getSnapshotDeletionCandidates(any())).thenAnswer(
+        (_) async => (candidates: [(localId: 'local-1', remoteId: 'remote-1', checksum: 'checksum-1')], total: 1),
+      );
+    }
+
+    test('snapshots before reconciliation, then detects and queues deletions', () async {
+      await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletions, true);
+      // The delta never reports deletions, the album reconciliation removes their rows
+      stubDeltaSync(const [], albums: [album]);
+      stubCandidates();
+
+      await sut.sync();
+
+      verifyInOrder([
+        () => mockLocalDeletionRepository.snapshotBackedUpAssets(UserStub.admin.id),
+        () => mockLocalAlbumRepository.updateAll(any()),
+        () => mockLocalAlbumRepository.processDelta(
+          updates: any(named: 'updates'),
+          deletes: any(named: 'deletes'),
+          assetAlbums: any(named: 'assetAlbums'),
+        ),
+        () => mockLocalAlbumRepository.syncDeletes('album-1', any()),
+        () => mockLocalDeletionRepository.getSnapshotDeletionCandidates(1),
+        () => mockNativeSyncApi.getExistingAssetIds(['local-1']),
+        () => mockLocalDeletionRepository.upsert(UserStub.admin.id, {'remote-1': 'checksum-1'}),
+        () => mockLocalDeletionRepository.clearSnapshotAndConsumeExclusions(1),
+        () => mockNativeSyncApi.checkpointSync(),
+      ]);
+    });
+
+    test('re-verifies the reported deletes instead of queuing them directly', () async {
+      await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletions, true);
+      stubDeltaSync(const ['invalid-1']);
+
+      await sut.sync();
+
+      verify(() => mockLocalDeletionRepository.getSnapshotDeletionCandidates(any())).called(1);
+      verifyNever(() => mockLocalDeletionRepository.getExcluded(any()));
+      verifyNever(() => mockLocalDeletionRepository.getBackedUp(any(), any()));
+    });
+
+    test('skips snapshot and detection when the feature is disabled', () async {
+      stubDeltaSync(const [], albums: [album]);
+
+      await sut.sync();
+
+      verifyNever(() => mockLocalDeletionRepository.snapshotBackedUpAssets(any()));
+      verifyNever(() => mockLocalDeletionRepository.getSnapshotDeletionCandidates(any()));
+      verify(() => mockLocalAlbumRepository.syncDeletes('album-1', any())).called(1);
+    });
+
+    test('skips snapshot and detection when photo access is limited', () async {
+      await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletions, true);
+      when(() => mockDevicePermissionService.galleryStatus()).thenAnswer((_) async => DevicePermissionStatus.limited);
+      stubDeltaSync(const [], albums: [album]);
+
+      await sut.sync();
+
+      verifyNever(() => mockLocalDeletionRepository.snapshotBackedUpAssets(any()));
+      verifyNever(() => mockLocalDeletionRepository.getSnapshotDeletionCandidates(any()));
+    });
+
+    test('still detects and queues deletions when cancelled', () async {
+      await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletions, true);
+
+      final cancellation = Completer<void>()..complete();
+      when(() => mockNativeSyncApi.cancelSync()).thenAnswer((_) async {});
+      final cancelledSut = LocalSyncService(
+        localAlbumRepository: mockLocalAlbumRepository,
+        trashedLocalAssetRepository: mockTrashedLocalAssetRepository,
+        assetMediaRepository: mockAssetMediaRepository,
+        permissionRepository: mockPermissionRepository,
+        devicePermissionService: mockDevicePermissionService,
+        localDeletionRepository: mockLocalDeletionRepository,
+        nativeSyncApi: mockNativeSyncApi,
+        cancellation: cancellation,
+      );
+      stubDeltaSync(const [], albums: [album]);
+      stubCandidates();
+
+      await cancelledSut.sync();
+
+      verify(() => mockLocalDeletionRepository.upsert(UserStub.admin.id, {'remote-1': 'checksum-1'})).called(1);
+      verifyNever(() => mockLocalAlbumRepository.syncDeletes(any(), any()));
+      verifyNever(() => mockNativeSyncApi.checkpointSync());
     });
   });
 

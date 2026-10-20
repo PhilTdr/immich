@@ -1,7 +1,10 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:immich_mobile/constants/constants.dart';
 import 'package:immich_mobile/data/db/main/table/local/deletion.drift.dart';
+import 'package:immich_mobile/domain/models/album/local_album.model.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
+import 'package:immich_mobile/infrastructure/repositories/local_album.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/local_deletion.repository.dart';
 
 import '../repository_context.dart';
@@ -233,6 +236,27 @@ void main() {
 
       expect(result.total, 1);
       expect(result.candidates, [(localId: local.id, remoteId: remote.id, checksum: 'checksum-1')]);
+    });
+
+    test('returns candidates for assets the Android album reconciliation removed', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+      final albums = LocalAlbumRepository(ctx.db);
+      await ctx.newLocalAlbum(id: 'camera');
+      await ctx.newLocalAlbum(id: 'vanished');
+      for (final (id, albumId) in [('kept', 'camera'), ('deleted', 'camera'), ('in-vanished', 'vanished')]) {
+        await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-$id');
+        await ctx.newLocalAsset(id: id, checksum: 'checksum-$id');
+        await ctx.newLocalAlbumAsset(albumId: albumId, assetId: id);
+      }
+
+      final snapshotId = await sut.snapshotBackedUpAssets(userId);
+      await albums.updateAll([LocalAlbum(id: 'camera', name: 'Camera', updatedAt: DateTime(2026))]);
+      await albums.syncDeletes('camera', ['kept']);
+      final result = await sut.getSnapshotDeletionCandidates(snapshotId);
+
+      expect(result.total, 3);
+      expect(result.candidates.map((c) => c.localId), unorderedEquals(['deleted', 'in-vanished']));
     });
 
     test('omits assets that survived the reconciliation', () async {
