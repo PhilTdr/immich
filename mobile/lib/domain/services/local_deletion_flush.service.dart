@@ -35,6 +35,11 @@ class LocalDeletionFlushService {
 
   bool get _syncLocalDeletionsEnabled => SettingsRepository.instance.appConfig.backup.syncLocalDeletions;
 
+  Future<bool> _stillEnabled() async {
+    await SettingsRepository.instance.refresh();
+    return _syncLocalDeletionsEnabled;
+  }
+
   String? get _currentUserId => Store.tryGet(StoreKey.currentUser)?.id;
 
   /// Flushes the current user's pending deletions when the feature is enabled and full media access is granted
@@ -80,7 +85,7 @@ class LocalDeletionFlushService {
 
     _log.fine("Moving ${remoteIds.length} locally deleted assets to the server trash");
     for (final chunk in remoteIds.slices(_kDeletionFlushChunkSize)) {
-      if (_isCancelled) {
+      if (_isCancelled || !await _stillEnabled()) {
         return;
       }
       try {
@@ -103,7 +108,7 @@ class LocalDeletionFlushService {
 
   Future<void> _flushIndividually(List<String> remoteIds) async {
     for (final remoteId in remoteIds) {
-      if (_isCancelled) {
+      if (_isCancelled || !await _stillEnabled()) {
         return;
       }
       try {

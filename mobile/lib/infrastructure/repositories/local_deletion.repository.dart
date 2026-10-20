@@ -222,11 +222,8 @@ class LocalDeletionRepository extends DatabaseAccessor<Drift> with $LocalDeletio
     );
   }
 
-  /// Clears the queue and all exclusions
-  Future<void> deleteAll() {
-    return _db.transaction(() async {
-      await _db.delete(_db.localDeletionEntity).go();
-      await _db.delete(_db.localDeletionExclusionEntity).go();
-    });
+  /// Clears the queue but keeps the exclusions, so app-initiated deletions stay skipped if the sync is enabled again
+  Future<void> clearQueue() {
+    return _db.delete(_db.localDeletionEntity).go();
   }
 }
