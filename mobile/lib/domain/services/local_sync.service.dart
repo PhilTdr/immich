@@ -22,8 +22,8 @@ import 'package:immich_mobile/utils/diff.dart';
 import 'package:logging/logging.dart';
 
 const String _kSyncCancelledCode = "SYNC_CANCELLED";
-// A full sync that finds almost every backed-up asset gone is treated as a
-// device state change (volume ejected, access revoked), not as deletions.
+// A sync that finds almost every backed-up asset gone is treated as a device
+// state change (volume ejected, access revoked), not as deletions.
 const int _kDeletionGuardMinAssets = 50;
 const double _kDeletionGuardMaxVanishedRatio = 0.9;
 
@@ -92,12 +92,16 @@ class LocalSyncService {
       _log.fine("Delta updated: ${delta.updates.length}");
       _log.fine("Delta deleted: ${delta.deletes.length}");
 
+      // The Android delta does not report deletions. Snapshot the backed-up assets so the rows that the album
+      // reconciliation below removes can be detected afterwards, like in the full sync
+      final snapshot = CurrentPlatform.isAndroid ? await _takeDeletionSnapshot() : null;
+
       final deviceAlbums = await _nativeSyncApi.getAlbums();
       await _localAlbumRepository.updateAll(deviceAlbums.toLocalAlbums());
       final newAssets = delta.updates.toLocalAssets();
 
       // Record deletion intents before processDelta removes the local rows.
-      final ownerId = delta.deletes.isEmpty ? null : await _deletionSyncOwner();
+      final ownerId = CurrentPlatform.isIOS && delta.deletes.isNotEmpty ? await _deletionSyncOwner() : null;
       final excluded = ownerId != null ? await recordLocallyDeletedFromDelta(delta.deletes, ownerId) : const <String>{};
 
       await _localAlbumRepository.processDelta(
@@ -117,10 +121,18 @@ class LocalSyncService {
         for (final album in dbAlbums) {
           if (_isCancelled) {
             _log.warning("Local sync cancelled. Stopped processing albums.");
-            return;
+            break;
           }
           final deviceIds = await _nativeSyncApi.getAssetIdsForAlbum(album.id);
           await _localAlbumRepository.syncDeletes(album.id, deviceIds);
+        }
+
+        // Also when cancelled, as no later sync can detect the rows removed so far
+        if (snapshot != null) {
+          await _detectAndQueueDeletionsFromSnapshot(snapshot);
+        }
+        if (_isCancelled) {
+          return;
         }
       }
 
