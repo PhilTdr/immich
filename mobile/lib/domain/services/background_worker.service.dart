@@ -329,11 +329,13 @@ class BackgroundWorkerBgService extends BackgroundWorkerFlutterApi {
       return isSuccess;
     }
 
+    var hashTimedOut = false;
     var hashFuture = _hashService.hashAssets();
     if (hashTimeout != null) {
       hashFuture = hashFuture.timeout(
         hashTimeout,
         onTimeout: () {
+          hashTimedOut = true;
           // Consume cancellation errors as we want to continue processing
         },
       );
@@ -344,7 +346,11 @@ class BackgroundWorkerBgService extends BackgroundWorkerFlutterApi {
       return isSuccess;
     }
 
-    await _localDeletionFlushService.flush();
+    // Hashing that is still running would miss restored copies, and the move check would cancel it on the shared
+    // native hash job, so the deletions wait for the next run
+    if (!hashTimedOut) {
+      await _localDeletionFlushService.flush();
+    }
     return isSuccess;
   }
 }

@@ -2170,6 +2170,8 @@
   "sync_local_deletions_setting_description": "Photos and videos that have been deleted in other apps will also be moved to the trash on the server",
   "sync_local_deletions_setting_description_without_permission": "Photos and videos that have been deleted in other apps will also be moved to the trash on the server. Requires full access to the photo library",
   "sync_local_deletions_setting_title": "Deleted on device",
+  "sync_local_moves_out_of_backup_as_deletion_setting_description": "Photos and videos that are moved as a new file into a folder that is not backed up, for example on the SD card, will also be moved to the trash on the server",
+  "sync_local_moves_out_of_backup_as_deletion_setting_title": "Moved out of backup",
   "sync_remote": "Sync Remote",
   "sync_status": "Sync Status",
   "sync_status_subtitle": "View and manage the sync system",

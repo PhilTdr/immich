@@ -52,6 +52,7 @@ final localDeletionFlushServiceProvider = Provider((ref) {
     assetService: ref.watch(assetServiceProvider),
     devicePermissionService: ref.watch(galleryPermissionServiceProvider),
     serverInfoService: ref.watch(serverInfoServiceProvider),
+    nativeSyncApi: ref.watch(nativeSyncApiProvider),
     cancellation: ref.watch(cancellationProvider),
   );
 });

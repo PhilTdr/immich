@@ -7,8 +7,10 @@ import 'package:immich_mobile/domain/models/store.model.dart';
 import 'package:immich_mobile/domain/services/asset.service.dart';
 import 'package:immich_mobile/domain/services/device_permission.service.dart';
 import 'package:immich_mobile/entities/store.entity.dart';
+import 'package:immich_mobile/extensions/platform_extensions.dart';
 import 'package:immich_mobile/infrastructure/repositories/local_deletion.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/settings.repository.dart';
+import 'package:immich_mobile/platform/native_sync_api.g.dart';
 import 'package:immich_mobile/services/server_info.service.dart';
 import 'package:logging/logging.dart';
 import 'package:openapi/api.dart' show ApiException;
@@ -20,6 +22,7 @@ class LocalDeletionFlushService {
   final AssetService _assetService;
   final DevicePermissionService _devicePermissionService;
   final ServerInfoService _serverInfoService;
+  final NativeSyncApi _nativeSyncApi;
   final Completer<void>? _cancellation;
   final Logger _log = Logger("LocalDeletionFlushService");
 
@@ -28,12 +31,18 @@ class LocalDeletionFlushService {
     required this._assetService,
     required this._devicePermissionService,
     required this._serverInfoService,
+    required this._nativeSyncApi,
     this._cancellation,
-  });
+  }) {
+    unawaited(_cancellation?.future.then((_) => _nativeSyncApi.cancelHashing().onError(_log.warning)));
+  }
 
   bool get _isCancelled => _cancellation?.isCompleted ?? false;
 
   bool get _syncLocalDeletionsEnabled => SettingsRepository.instance.appConfig.backup.syncLocalDeletions;
+
+  bool get _syncLocalMovesOutOfBackupAsDeletion =>
+      SettingsRepository.instance.appConfig.backup.syncLocalMovesOutOfBackupAsDeletion;
 
   Future<bool> _stillEnabled() async {
     await SettingsRepository.instance.refresh();
@@ -63,7 +72,7 @@ class LocalDeletionFlushService {
     await _localDeletionRepository.pruneAlreadyTrashed();
     await _localDeletionRepository.pruneRestored(ownerId);
     final settledBefore = DateTime.now().subtract(kLocalDeletionSettleDuration);
-    final remoteIds = await _localDeletionRepository.getPending(ownerId, settledBefore: settledBefore);
+    var remoteIds = await _localDeletionRepository.getPending(ownerId, settledBefore: settledBefore);
     if (remoteIds.isEmpty) {
       return;
     }
@@ -81,6 +90,21 @@ class LocalDeletionFlushService {
         "Server trash is disabled. Keeping ${remoteIds.length} pending deletions to avoid permanent deletion",
       );
       return;
+    }
+
+    // iOS albums only reference assets, so nothing is moved out of a backed-up album there
+    if (CurrentPlatform.isAndroid && !_syncLocalMovesOutOfBackupAsDeletion) {
+      final (:moved, :unresolved) = await _findMoved(remoteIds);
+      if (moved.isNotEmpty) {
+        await _localDeletionRepository.deleteByRemoteIds(moved);
+      }
+      remoteIds = [
+        for (final id in remoteIds)
+          if (!moved.contains(id) && !unresolved.contains(id)) id,
+      ];
+      if (remoteIds.isEmpty) {
+        return;
+      }
     }
 
     _log.fine("Moving ${remoteIds.length} locally deleted assets to the server trash");
@@ -104,6 +128,48 @@ class LocalDeletionFlushService {
       }
       await _localDeletionRepository.deleteByRemoteIds(chunk);
     }
+  }
+
+  /// Splits off the pending deletions that were moves into a folder that is not backed up. The copy there is never
+  /// hashed, so files with the same name are hashed here and compared with the deleted file. Deletions whose
+  /// look-alikes could not be hashed stay queued for the next flush
+  Future<({Set<String> moved, Set<String> unresolved})> _findMoved(List<String> remoteIds) async {
+    final candidates = await _localDeletionRepository.getMoveCandidates(remoteIds);
+    if (candidates.isEmpty) {
+      return (moved: const <String>{}, unresolved: const <String>{});
+    }
+
+    final hashes = <String, String>{};
+    for (final slice in candidates.values.expand((c) => c.localIds).toSet().slices(kBatchHashFileLimit)) {
+      if (_isCancelled) {
+        break;
+      }
+      try {
+        for (final result in await _nativeSyncApi.hashAssets(slice)) {
+          final hash = result.hash;
+          if (hash != null) {
+            hashes[result.assetId] = hash;
+          }
+        }
+      } catch (e, s) {
+        _log.warning("Failed to hash possibly moved assets. Will retry next sync", e, s);
+        break;
+      }
+    }
+
+    final moved = <String>{};
+    final unresolved = <String>{};
+    for (final MapEntry(key: remoteId, value: candidate) in candidates.entries) {
+      if (candidate.localIds.any((id) => hashes[id] == candidate.checksum)) {
+        moved.add(remoteId);
+      } else if (candidate.localIds.any((id) => !hashes.containsKey(id))) {
+        unresolved.add(remoteId);
+      }
+    }
+    if (moved.isNotEmpty) {
+      _log.info("Keeping the server copy of ${moved.length} assets that were moved into a folder without backup");
+    }
+    return (moved: moved, unresolved: unresolved);
   }
 
   Future<void> _flushIndividually(List<String> remoteIds) async {

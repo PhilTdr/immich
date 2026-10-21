@@ -44,6 +44,7 @@ enum SettingsKey<T> {
   backupTriggerDelay<int>(),
   backupSyncAlbums<bool>(),
   backupSyncLocalDeletions<bool>(),
+  backupSyncLocalMovesOutOfBackupAsDeletion<bool>(),
 
   // Timeline
   timelineTilesPerRow<int>(),
