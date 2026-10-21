@@ -264,7 +264,10 @@ class BackgroundSyncManager {
         .catchError((_) {}, test: (error) => error is CanceledError);
   }
 
-  Future<void> flushLocalDeletions() {
+  Future<void> flushLocalDeletions() async {
+    // The move check hashes on the shared native hash job, which would cancel a running hash task
+    await _hashTask?.future.catchError((_) {});
+
     if (_localDeletionFlushTask != null) {
       return _localDeletionFlushTask!.future.catchError((_) {}, test: (error) => error is CanceledError);
     }

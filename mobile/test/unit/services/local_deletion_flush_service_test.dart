@@ -3,6 +3,8 @@ import 'dart:io';
 
 import 'package:drift/drift.dart' as drift;
 import 'package:drift/native.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:immich_mobile/constants/constants.dart';
 import 'package:immich_mobile/constants/enums.dart';
@@ -15,6 +17,7 @@ import 'package:immich_mobile/entities/store.entity.dart';
 import 'package:immich_mobile/infrastructure/repositories/settings.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/store.repository.dart';
 import 'package:immich_mobile/models/server_info/server_features.model.dart';
+import 'package:immich_mobile/platform/native_sync_api.g.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:openapi/api.dart' show ApiException;
 
@@ -49,10 +52,14 @@ void main() {
       assetService: services.asset.service,
       devicePermissionService: devicePermissionService,
       serverInfoService: services.serverInfo,
+      nativeSyncApi: mocks.nativeApi.api,
     );
 
     await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletions, true);
+    await SettingsRepository.instance.write(SettingsKey.backupSyncLocalMovesOutOfBackupAsDeletion, false);
     await Store.put(StoreKey.currentUser, UserStub.admin);
+    when(() => mocks.nativeApi.api.cancelHashing()).thenAnswer((_) async {});
+    when(() => mocks.localDeletion.repo.getMoveCandidates(any())).thenAnswer((_) async => {});
     when(() => devicePermissionService.galleryStatus()).thenAnswer((_) async => DevicePermissionStatus.granted);
     when(() => mocks.localDeletion.repo.pruneAlreadyTrashed()).thenAnswer((_) async {});
     when(() => mocks.localDeletion.repo.pruneRestored(any())).thenAnswer((_) async {});
@@ -129,6 +136,7 @@ void main() {
           assetService: services.asset.service,
           devicePermissionService: devicePermissionService,
           serverInfoService: services.serverInfo,
+          nativeSyncApi: mocks.nativeApi.api,
           cancellation: cancellation,
         );
         when(
@@ -147,6 +155,8 @@ void main() {
 
         verify(() => services.asset.service.trash(['remote-1'])).called(1);
         verifyNever(() => services.asset.service.trash(['remote-2']));
+        await pumpEventQueue();
+        verify(() => mocks.nativeApi.api.cancelHashing()).called(1);
       });
 
       for (final (name, features) in [
@@ -210,6 +220,81 @@ void main() {
         await sut.flushPendingDeletions('owner-1');
 
         verify(() => services.asset.service.trash(any())).called(1);
+      });
+    });
+
+    group('moves out of backup', () {
+      setUp(() {
+        debugDefaultTargetPlatformOverride = TargetPlatform.android;
+        addTearDown(() => debugDefaultTargetPlatformOverride = null);
+        when(
+          () => mocks.localDeletion.repo.getPending(any(), settledBefore: any(named: 'settledBefore')),
+        ).thenAnswer((_) async => ['remote-1', 'remote-2']);
+        when(() => mocks.localDeletion.repo.getMoveCandidates(any())).thenAnswer(
+          (_) async => {
+            'remote-1': (checksum: 'checksum-1', localIds: ['copy-1']),
+          },
+        );
+      });
+
+      void stubHash(HashResult result) {
+        when(mocks.nativeApi.hashAssets).thenAnswer((_) async => [result]);
+      }
+
+      test('drops a deletion whose same-named file has the same content', () async {
+        stubHash(HashResult(assetId: 'copy-1', hash: 'checksum-1'));
+
+        await sut.flushPendingDeletions('owner-1');
+
+        verify(() => mocks.localDeletion.repo.deleteByRemoteIds({'remote-1'})).called(1);
+        verify(() => services.asset.service.trash(['remote-2'])).called(1);
+        verifyNever(() => services.asset.service.trash(['remote-1', 'remote-2']));
+      });
+
+      test('flushes a deletion whose same-named file has other content', () async {
+        stubHash(HashResult(assetId: 'copy-1', hash: 'other'));
+
+        await sut.flushPendingDeletions('owner-1');
+
+        verify(() => services.asset.service.trash(['remote-1', 'remote-2'])).called(1);
+      });
+
+      test('keeps a deletion queued while its same-named file cannot be hashed', () async {
+        stubHash(HashResult(assetId: 'copy-1', error: 'unreadable'));
+
+        await sut.flushPendingDeletions('owner-1');
+
+        verify(() => services.asset.service.trash(['remote-2'])).called(1);
+        verify(() => mocks.localDeletion.repo.deleteByRemoteIds(['remote-2'])).called(1);
+        verifyNever(() => mocks.localDeletion.repo.deleteByRemoteIds(['remote-1']));
+      });
+
+      test('keeps a deletion queued when hashing fails', () async {
+        when(mocks.nativeApi.hashAssets).thenThrow(PlatformException(code: 'HASH_CANCELLED'));
+
+        await sut.flushPendingDeletions('owner-1');
+
+        verify(() => services.asset.service.trash(['remote-2'])).called(1);
+        verifyNever(() => services.asset.service.trash(['remote-1', 'remote-2']));
+        verifyNever(() => mocks.localDeletion.repo.deleteByRemoteIds(['remote-1']));
+      });
+
+      test('does not look for moves when they count as deletions', () async {
+        await SettingsRepository.instance.write(SettingsKey.backupSyncLocalMovesOutOfBackupAsDeletion, true);
+
+        await sut.flushPendingDeletions('owner-1');
+
+        verifyNever(() => mocks.localDeletion.repo.getMoveCandidates(any()));
+        verify(() => services.asset.service.trash(['remote-1', 'remote-2'])).called(1);
+      });
+
+      test('does not look for moves on iOS', () async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+
+        await sut.flushPendingDeletions('owner-1');
+
+        verifyNever(() => mocks.localDeletion.repo.getMoveCandidates(any()));
+        verifyNever(mocks.nativeApi.hashAssets);
       });
     });
 

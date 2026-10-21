@@ -6,6 +6,7 @@ import 'package:immich_mobile/domain/models/album/local_album.model.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/infrastructure/repositories/local_album.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/local_deletion.repository.dart';
+import 'package:immich_mobile/utils/option.dart';
 
 import '../repository_context.dart';
 
@@ -383,6 +384,32 @@ void main() {
       await sut.snapshotBackedUpAssets(userId);
 
       expect((await sut.getSnapshotDeletionCandidates(1)).total, 0);
+    });
+  });
+
+  group('getMoveCandidates', () {
+    test('returns the unhashed files with the name and type of the deleted remote asset', () async {
+      final remote = await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1');
+      await sut.upsert(userId, {remote.id: 'checksum-1'});
+      final copy = await ctx.newLocalAsset(name: remote.name, checksumOption: const Option.none());
+      await ctx.newLocalAsset(name: remote.name.replaceFirst('.jpg', ' (1).jpg'), checksumOption: const Option.none());
+      await ctx.newLocalAsset(name: remote.name);
+      await ctx.newLocalAsset(name: 'other.jpg', checksumOption: const Option.none());
+      await ctx.newLocalAsset(name: remote.name, type: AssetType.video, checksumOption: const Option.none());
+
+      final result = await sut.getMoveCandidates([remote.id]);
+
+      expect(result.keys, [remote.id]);
+      expect(result[remote.id]!.checksum, 'checksum-1');
+      expect(result[remote.id]!.localIds, [copy.id]);
+    });
+
+    test('returns nothing for deletions without a same-named file', () async {
+      final remote = await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1');
+      await sut.upsert(userId, {remote.id: 'checksum-1'});
+      await ctx.newLocalAsset(name: 'other.jpg', checksumOption: const Option.none());
+
+      expect(await sut.getMoveCandidates([remote.id]), isEmpty);
     });
   });
 

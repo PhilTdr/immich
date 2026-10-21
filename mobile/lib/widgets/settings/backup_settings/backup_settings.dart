@@ -158,6 +158,7 @@ class _BackupSwitchTile extends ConsumerWidget {
   final String subtitle;
   final bool enabled;
   final void Function(bool)? onChanged;
+  final EdgeInsetsGeometry? contentPadding;
 
   const _BackupSwitchTile({
     required this.metadataKey,
@@ -166,6 +167,7 @@ class _BackupSwitchTile extends ConsumerWidget {
     required this.subtitle,
     this.enabled = true,
     this.onChanged,
+    this.contentPadding,
   });
 
   @override
@@ -176,6 +178,7 @@ class _BackupSwitchTile extends ConsumerWidget {
       child: SettingListTile(
         title: title,
         subtitle: subtitle,
+        contentPadding: contentPadding,
         trailing: Switch(
           value: value,
           onChanged: !enabled
@@ -304,19 +307,51 @@ class _SyncLocalDeletionsButton extends ConsumerWidget {
     final deletionRepository = ref.watch(driftProvider).localDeletionRepository;
     final hasFullAccess = ref.watch(galleryPermissionNotifier) == .granted;
     final isEnabled = ref.watch(appConfigProvider.select((c) => c.backup.syncLocalDeletions));
-    return _BackupSwitchTile(
-      metadataKey: SettingsKey.backupSyncLocalDeletions,
-      selector: (c) => c.backup.syncLocalDeletions,
-      title: context.t.sync_local_deletions_setting_title,
-      subtitle: hasFullAccess
-          ? context.t.sync_local_deletions_setting_description
-          : context.t.sync_local_deletions_setting_description_without_permission,
-      enabled: hasFullAccess || isEnabled,
-      onChanged: (enabled) {
-        if (!enabled) {
-          unawaited(deletionRepository.clearQueue());
-        }
-      },
+    return Column(
+      children: [
+        _BackupSwitchTile(
+          metadataKey: SettingsKey.backupSyncLocalDeletions,
+          selector: (c) => c.backup.syncLocalDeletions,
+          title: context.t.sync_local_deletions_setting_title,
+          subtitle: hasFullAccess
+              ? context.t.sync_local_deletions_setting_description
+              : context.t.sync_local_deletions_setting_description_without_permission,
+          enabled: hasFullAccess || isEnabled,
+          onChanged: (enabled) {
+            if (!enabled) {
+              unawaited(deletionRepository.clearQueue());
+            }
+          },
+        ),
+        // iOS albums only reference assets, so nothing is moved out of a backed-up album there
+        if (CurrentPlatform.isAndroid) const _SyncLocalMovesOutOfBackupAsDeletionButton(),
+      ],
+    );
+  }
+}
+
+class _SyncLocalMovesOutOfBackupAsDeletionButton extends ConsumerWidget {
+  const _SyncLocalMovesOutOfBackupAsDeletionButton();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final isDeletionSyncEnabled = ref.watch(appConfigProvider.select((c) => c.backup.syncLocalDeletions));
+    return AnimatedSize(
+      duration: const Duration(milliseconds: 300),
+      curve: Curves.easeInOut,
+      child: AnimatedOpacity(
+        duration: const Duration(milliseconds: 200),
+        opacity: isDeletionSyncEnabled ? 1.0 : 0.0,
+        child: isDeletionSyncEnabled
+            ? _BackupSwitchTile(
+                metadataKey: SettingsKey.backupSyncLocalMovesOutOfBackupAsDeletion,
+                selector: (c) => c.backup.syncLocalMovesOutOfBackupAsDeletion,
+                title: context.t.sync_local_moves_out_of_backup_as_deletion_setting_title,
+                subtitle: context.t.sync_local_moves_out_of_backup_as_deletion_setting_description,
+                contentPadding: const EdgeInsetsDirectional.only(start: 32, end: 24),
+              )
+            : const SizedBox.shrink(),
+      ),
     );
   }
 }

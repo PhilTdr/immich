@@ -40,6 +40,7 @@ void main() {
   late MockSyncStreamService mockRemoteSyncService;
   late MockBackgroundUploadService mockBackgroundUploadService;
   late MockLocalDeletionFlushService mockLocalDeletionFlushService;
+  late MockHashService mockHashService;
   late Drift db;
 
   setUpAll(() async {
@@ -58,7 +59,7 @@ void main() {
 
   setUp(() {
     final mockLocalSyncService = MockLocalSyncService();
-    final mockHashService = MockHashService();
+    mockHashService = MockHashService();
     mockLocalDeletionFlushService = MockLocalDeletionFlushService();
     final mockUserService = MockUserService();
     mockRemoteSyncService = MockSyncStreamService();
@@ -86,6 +87,35 @@ void main() {
         backgroundUploadServiceProvider.overrideWithValue(mockBackgroundUploadService),
       ],
     );
+  });
+
+  group('onAndroidUpload', () {
+    setUp(() {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      addTearDown(() => debugDefaultTargetPlatformOverride = TargetPlatform.iOS);
+      when(() => mockRemoteSyncService.sync()).thenAnswer((_) async => true);
+    });
+
+    test('flushes local deletions after hashing', () {
+      fakeAsync((async) {
+        unawaited(sut.onAndroidUpload(null));
+        async.flushMicrotasks();
+
+        verify(() => mockLocalDeletionFlushService.flush()).called(1);
+      });
+    });
+
+    test('does not flush local deletions while hashing is still running', () {
+      fakeAsync((async) {
+        when(() => mockHashService.hashAssets()).thenAnswer((_) => Completer<void>().future);
+
+        unawaited(sut.onAndroidUpload(null));
+        async.elapse(const Duration(minutes: 3));
+        async.flushMicrotasks();
+
+        verifyNever(() => mockLocalDeletionFlushService.flush());
+      });
+    });
   });
 
   group('onIosUpload', () {

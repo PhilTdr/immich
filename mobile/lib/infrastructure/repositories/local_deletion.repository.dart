@@ -130,6 +130,41 @@ class LocalDeletionRepository extends DatabaseAccessor<Drift> with $LocalDeletio
         .go();
   }
 
+  /// The files without checksum that share name and type with the remote asset of the given pending deletions, by
+  /// remote id and with the checksum of the deleted file. Such a file can be a copy that was moved into a folder that
+  /// is not backed up
+  Future<Map<String, ({String checksum, List<String> localIds})>> getMoveCandidates(Iterable<String> remoteIds) async {
+    final deletion = _db.localDeletionEntity;
+    final remote = _db.remoteAssetEntity;
+    final pending = <({String name, int type}), List<({String remoteId, String checksum})>>{};
+    for (final slice in remoteIds.toSet().slices(kDriftMaxChunk)) {
+      final query =
+          _db.selectOnly(deletion).join([innerJoin(remote, remote.id.equalsExp(deletion.remoteId), useColumns: false)])
+            ..addColumns([deletion.remoteId, deletion.checksum, remote.name, remote.type])
+            ..where(deletion.remoteId.isIn(slice));
+      for (final row in await query.get()) {
+        final key = (name: row.read(remote.name)!, type: row.read(remote.type)!);
+        (pending[key] ??= []).add((remoteId: row.read(deletion.remoteId)!, checksum: row.read(deletion.checksum)!));
+      }
+    }
+
+    // A single pass over the unhashed assets, a join would scan them once per pending deletion
+    final local = _db.localAssetEntity;
+    final result = <String, ({String checksum, List<String> localIds})>{};
+    for (final slice in pending.keys.map((key) => key.name).toSet().slices(kDriftMaxChunk)) {
+      final query = local.selectOnly()
+        ..addColumns([local.id, local.name, local.type])
+        ..where(local.checksum.isNull() & local.name.isIn(slice));
+      for (final row in await query.get()) {
+        final key = (name: row.read(local.name)!, type: row.read(local.type)!);
+        for (final deleted in pending[key] ?? const <({String remoteId, String checksum})>[]) {
+          (result[deleted.remoteId] ??= (checksum: deleted.checksum, localIds: [])).localIds.add(row.read(local.id)!);
+        }
+      }
+    }
+    return result;
+  }
+
   /// Marks app-initiated local deletions, which keep the remote copy, so the deletion sync skips them
   Future<void> markExcluded(Iterable<String> localIds) async {
     if (localIds.isEmpty) {

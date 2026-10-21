@@ -13,5 +13,6 @@ abstract class BackupConfig with _$BackupConfig {
     @Default(30) int triggerDelay,
     @Default(false) bool syncAlbums,
     @Default(false) bool syncLocalDeletions,
+    @Default(false) bool syncLocalMovesOutOfBackupAsDeletion,
   }) = _BackupConfig;
 }
