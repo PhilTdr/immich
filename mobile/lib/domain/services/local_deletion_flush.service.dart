@@ -131,12 +131,14 @@ class LocalDeletionFlushService {
   }
 
   /// Splits off the pending deletions that were moves into a folder that is not backed up. The copy there is never
-  /// hashed, so files with the same name are hashed here and compared with the deleted file. Deletions whose
-  /// look-alikes could not be hashed stay queued for the next flush
+  /// hashed, so files with the same name or the same file size as the deleted file are hashed here and compared with
+  /// it. Deletions whose look-alikes could not be hashed stay queued for the next flush
   Future<({Set<String> moved, Set<String> unresolved})> _findMoved(List<String> remoteIds) async {
-    final candidates = await _localDeletionRepository.getMoveCandidates(remoteIds);
+    final candidates = Map.of(await _localDeletionRepository.getMoveCandidates(remoteIds));
+    final unresolved = <String>{};
+    await _addSameSizeCandidates(remoteIds, candidates, unresolved);
     if (candidates.isEmpty) {
-      return (moved: const <String>{}, unresolved: const <String>{});
+      return (moved: const <String>{}, unresolved: unresolved);
     }
 
     final hashes = <String, String>{};
@@ -158,7 +160,6 @@ class LocalDeletionFlushService {
     }
 
     final moved = <String>{};
-    final unresolved = <String>{};
     for (final MapEntry(key: remoteId, value: candidate) in candidates.entries) {
       if (candidate.localIds.any((id) => hashes[id] == candidate.checksum)) {
         moved.add(remoteId);
@@ -166,10 +167,48 @@ class LocalDeletionFlushService {
         unresolved.add(remoteId);
       }
     }
+    unresolved.removeAll(moved);
     if (moved.isNotEmpty) {
       _log.info("Keeping the server copy of ${moved.length} assets that were moved into a folder without backup");
     }
     return (moved: moved, unresolved: unresolved);
+  }
+
+  /// Adds the unhashed files with the file size and type of the deleted file to [candidates]. A move that renames the
+  /// file is only found this way. The size comes from the server, so deletions whose remote asset has no file size
+  /// yet keep the name match only; when the device lookup fails, the sized deletions stay queued for the next flush
+  Future<void> _addSameSizeCandidates(
+    List<String> remoteIds,
+    Map<String, ({String checksum, List<String> localIds})> candidates,
+    Set<String> unresolved,
+  ) async {
+    final sized = await _localDeletionRepository.getPendingFileSizes(remoteIds);
+    if (sized.isEmpty) {
+      return;
+    }
+
+    final Map<String, int> idsBySize;
+    final Map<String, int> unhashed;
+    try {
+      idsBySize = await _nativeSyncApi.getAssetIdsBySize(sized.values.map((p) => p.fileSize).toSet().toList());
+      unhashed = await _localDeletionRepository.getUnhashedByIds(idsBySize.keys);
+    } catch (e, s) {
+      _log.warning("Failed to look up possibly moved assets by file size. Will retry next sync", e, s);
+      unresolved.addAll(sized.keys);
+      return;
+    }
+
+    for (final MapEntry(key: remoteId, value: pending) in sized.entries) {
+      final sameSize = [
+        for (final MapEntry(key: localId, value: size) in idsBySize.entries)
+          if (size == pending.fileSize && unhashed[localId] == pending.type) localId,
+      ];
+      if (sameSize.isEmpty) {
+        continue;
+      }
+      final existing = candidates[remoteId];
+      candidates[remoteId] = (checksum: pending.checksum, localIds: {...?existing?.localIds, ...sameSize}.toList());
+    }
   }
 
   Future<void> _flushIndividually(List<String> remoteIds) async {

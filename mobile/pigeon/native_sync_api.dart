@@ -160,4 +160,8 @@ abstract class NativeSyncApi {
   // The ids that still exist on the device, including hidden assets
   @TaskQueue(type: TaskQueueType.serialBackgroundThread)
   List<String> getExistingAssetIds(List<String> assetIds);
+
+  // The ids of the images and videos on the device whose file size is one of [sizes], with that size
+  @TaskQueue(type: TaskQueueType.serialBackgroundThread)
+  Map<String, int> getAssetIdsBySize(List<int> sizes);
 }

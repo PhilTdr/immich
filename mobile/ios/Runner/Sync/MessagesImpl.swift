@@ -515,4 +515,9 @@ class NativeSyncApiImpl: ImmichPlugin, NativeSyncApi, FlutterPlugin {
     }
     return existing
   }
+
+  func getAssetIdsBySize(sizes: [Int64]) throws -> [String: Int64] {
+    // Only used by the Android move check: iOS albums reference assets, nothing is moved out of a backed-up album
+    return [:]
+  }
 }

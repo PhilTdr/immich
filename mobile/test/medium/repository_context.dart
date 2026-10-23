@@ -15,6 +15,7 @@ import 'package:immich_mobile/data/db/main/table/remote/album_asset.drift.dart';
 import 'package:immich_mobile/data/db/main/table/remote/album_user.drift.dart';
 import 'package:immich_mobile/data/db/main/table/remote/asset.drift.dart';
 import 'package:immich_mobile/data/db/main/table/remote/cloud_id.drift.dart';
+import 'package:immich_mobile/data/db/main/table/remote/exif.drift.dart';
 import 'package:immich_mobile/data/db/main/table/user/auth_user.drift.dart';
 import 'package:immich_mobile/data/db/main/table/user/partner.drift.dart';
 import 'package:immich_mobile/data/db/main/table/user/user.drift.dart';
@@ -177,6 +178,10 @@ class MediumRepositoryContext {
           ),
         );
   }
+
+  Future<RemoteExifEntityData> newRemoteExif({required String assetId, int? fileSize}) => db
+      .into(db.remoteExifEntity)
+      .insertReturning(RemoteExifEntityCompanion(assetId: .new(assetId), fileSize: .new(fileSize)));
 
   Future<RemoteAlbumEntityData> newRemoteAlbum({
     String? id,

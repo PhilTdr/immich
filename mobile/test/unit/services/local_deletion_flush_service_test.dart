@@ -296,6 +296,79 @@ void main() {
         verifyNever(() => mocks.localDeletion.repo.getMoveCandidates(any()));
         verifyNever(mocks.nativeApi.hashAssets);
       });
+
+      group('by file size', () {
+        setUp(() {
+          when(() => mocks.localDeletion.repo.getMoveCandidates(any())).thenAnswer((_) async => {});
+          when(
+            () => mocks.localDeletion.repo.getPendingFileSizes(any()),
+          ).thenAnswer((_) async => {'remote-1': (checksum: 'checksum-1', type: 1, fileSize: 1234)});
+          when(
+            () => mocks.nativeApi.api.getAssetIdsBySize(any()),
+          ).thenAnswer((_) async => {'renamed-1': 1234, 'hashed-1': 1234, 'video-1': 1234});
+          when(
+            () => mocks.localDeletion.repo.getUnhashedByIds(any()),
+          ).thenAnswer((_) async => {'renamed-1': 1, 'video-1': 2});
+        });
+
+        test('hashes only the unhashed files with the size and type of the deleted file', () async {
+          stubHash(HashResult(assetId: 'renamed-1', hash: 'other'));
+
+          await sut.flushPendingDeletions('owner-1');
+
+          verify(() => mocks.nativeApi.api.getAssetIdsBySize([1234])).called(1);
+          verify(
+            () => mocks.nativeApi.api.hashAssets(['renamed-1'], allowNetworkAccess: any(named: 'allowNetworkAccess')),
+          ).called(1);
+          verify(() => services.asset.service.trash(['remote-1', 'remote-2'])).called(1);
+        });
+
+        test('drops a deletion whose same-sized file has the same content', () async {
+          stubHash(HashResult(assetId: 'renamed-1', hash: 'checksum-1'));
+
+          await sut.flushPendingDeletions('owner-1');
+
+          verify(() => mocks.localDeletion.repo.deleteByRemoteIds({'remote-1'})).called(1);
+          verify(() => services.asset.service.trash(['remote-2'])).called(1);
+          verifyNever(() => services.asset.service.trash(['remote-1', 'remote-2']));
+        });
+
+        test('hashes a file that matches by name and by size only once', () async {
+          when(() => mocks.localDeletion.repo.getMoveCandidates(any())).thenAnswer(
+            (_) async => {
+              'remote-1': (checksum: 'checksum-1', localIds: ['renamed-1']),
+            },
+          );
+          stubHash(HashResult(assetId: 'renamed-1', hash: 'checksum-1'));
+
+          await sut.flushPendingDeletions('owner-1');
+
+          verify(
+            () => mocks.nativeApi.api.hashAssets(['renamed-1'], allowNetworkAccess: any(named: 'allowNetworkAccess')),
+          ).called(1);
+          verify(() => mocks.localDeletion.repo.deleteByRemoteIds({'remote-1'})).called(1);
+        });
+
+        test('does not look up sizes when no pending deletion has a file size', () async {
+          when(() => mocks.localDeletion.repo.getPendingFileSizes(any())).thenAnswer((_) async => {});
+
+          await sut.flushPendingDeletions('owner-1');
+
+          verifyNever(() => mocks.nativeApi.api.getAssetIdsBySize(any()));
+          verify(() => services.asset.service.trash(['remote-1', 'remote-2'])).called(1);
+        });
+
+        test('keeps the sized deletions queued when the size lookup fails', () async {
+          when(() => mocks.nativeApi.api.getAssetIdsBySize(any())).thenThrow(PlatformException(code: 'error'));
+
+          await sut.flushPendingDeletions('owner-1');
+
+          verify(() => services.asset.service.trash(['remote-2'])).called(1);
+          verifyNever(() => services.asset.service.trash(['remote-1', 'remote-2']));
+          verifyNever(() => mocks.localDeletion.repo.deleteByRemoteIds(['remote-1']));
+          verifyNever(mocks.nativeApi.hashAssets);
+        });
+      });
     });
 
     group('flush', () {

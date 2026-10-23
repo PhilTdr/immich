@@ -165,6 +165,49 @@ class LocalDeletionRepository extends DatabaseAccessor<Drift> with $LocalDeletio
     return result;
   }
 
+  /// The checksum, type and file size of the remote asset of the given pending deletions, by remote id. Deletions
+  /// whose remote asset has no file size yet are left out
+  Future<Map<String, ({String checksum, int type, int fileSize})>> getPendingFileSizes(
+    Iterable<String> remoteIds,
+  ) async {
+    final deletion = _db.localDeletionEntity;
+    final remote = _db.remoteAssetEntity;
+    final exif = _db.remoteExifEntity;
+    final result = <String, ({String checksum, int type, int fileSize})>{};
+    for (final slice in remoteIds.toSet().slices(kDriftMaxChunk)) {
+      final query =
+          _db.selectOnly(deletion).join([
+              innerJoin(remote, remote.id.equalsExp(deletion.remoteId), useColumns: false),
+              innerJoin(exif, exif.assetId.equalsExp(deletion.remoteId), useColumns: false),
+            ])
+            ..addColumns([deletion.remoteId, deletion.checksum, remote.type, exif.fileSize])
+            ..where(deletion.remoteId.isIn(slice) & exif.fileSize.isNotNull());
+      for (final row in await query.get()) {
+        result[row.read(deletion.remoteId)!] = (
+          checksum: row.read(deletion.checksum)!,
+          type: row.read(remote.type)!,
+          fileSize: row.read(exif.fileSize)!,
+        );
+      }
+    }
+    return result;
+  }
+
+  /// The type of those of [localIds] that have no checksum yet, by local id
+  Future<Map<String, int>> getUnhashedByIds(Iterable<String> localIds) async {
+    final local = _db.localAssetEntity;
+    final result = <String, int>{};
+    for (final slice in localIds.toSet().slices(kDriftMaxChunk)) {
+      final query = local.selectOnly()
+        ..addColumns([local.id, local.type])
+        ..where(local.id.isIn(slice) & local.checksum.isNull());
+      for (final row in await query.get()) {
+        result[row.read(local.id)!] = row.read(local.type)!;
+      }
+    }
+    return result;
+  }
+
   /// Marks app-initiated local deletions, which keep the remote copy, so the deletion sync skips them
   Future<void> markExcluded(Iterable<String> localIds) async {
     if (localIds.isEmpty) {

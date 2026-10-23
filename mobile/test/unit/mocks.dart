@@ -96,10 +96,13 @@ class RepositoryMocks {
   void _stubLocalDeletionRepository() {
     when(localDeletion.markExcluded).thenAnswer((_) async {});
     when(localDeletion.unmarkExcluded).thenAnswer((_) async {});
+    when(localDeletion.getPendingFileSizes).thenAnswer((_) async => {});
+    when(localDeletion.getUnhashedByIds).thenAnswer((_) async => {});
   }
 
   void _stubNativeSyncApi() {
     when(nativeApi.hashAssets).thenAnswer((_) async => []);
+    when(nativeApi.getAssetIdsBySize).thenAnswer((_) async => {});
   }
 
   void _stubAssetApiRepository() {
@@ -283,6 +286,12 @@ extension type const LocalDeletionRepositoryStub(MockLocalDeletionRepository rep
 
   Future<void> Function() get unmarkExcluded =>
       () => repo.unmarkExcluded(any());
+
+  Future<Map<String, ({String checksum, int type, int fileSize})>> Function() get getPendingFileSizes =>
+      () => repo.getPendingFileSizes(any());
+
+  Future<Map<String, int>> Function() get getUnhashedByIds =>
+      () => repo.getUnhashedByIds(any());
 }
 
 extension type const RemoteAssetRepositoryStub(MockRemoteAssetRepository repo)
@@ -414,6 +423,9 @@ extension type const CleanupServiceStub(MockCleanupService service) implements S
 extension type const NativeSyncApiStub(MockNativeSyncApi api) implements Stub<MockNativeSyncApi> {
   Future<List<HashResult>> Function() get hashAssets =>
       () => api.hashAssets(any(), allowNetworkAccess: any(named: 'allowNetworkAccess'));
+
+  Future<Map<String, int>> Function() get getAssetIdsBySize =>
+      () => api.getAssetIdsBySize(any());
 }
 
 extension type const AssetApiRepositoryStub(MockAssetApiRepository api) implements Stub<MockAssetApiRepository> {

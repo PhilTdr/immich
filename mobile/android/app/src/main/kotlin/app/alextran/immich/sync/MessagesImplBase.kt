@@ -594,4 +594,30 @@ open class NativeSyncApiImplBase(context: Context) : ImmichPlugin(), ActivityAwa
     }
     return existing
   }
+
+  fun getAssetIdsBySize(sizes: List<Long>): Map<String, Long> {
+    if (sizes.isEmpty()) {
+      return emptyMap()
+    }
+
+    val result = mutableMapOf<String, Long>()
+    val projection = arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.SIZE)
+    for (chunk in sizes.distinct().chunked(SQLITE_MAX_VARIABLE_NUMBER)) {
+      val placeholders = chunk.joinToString(",") { "?" }
+      val cursor = getCursor(
+        MediaStore.VOLUME_EXTERNAL,
+        "$MEDIA_SELECTION AND ${MediaStore.MediaColumns.SIZE} IN ($placeholders)",
+        arrayOf(*MEDIA_SELECTION_ARGS, *chunk.map { it.toString() }.toTypedArray()),
+        projection
+      ) ?: error("MediaStore asset size query failed")
+      cursor.use {
+        val idColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+        val sizeColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE)
+        while (cursor.moveToNext()) {
+          result[cursor.getLong(idColumn).toString()] = cursor.getLong(sizeColumn)
+        }
+      }
+    }
+    return result
+  }
 }

@@ -413,6 +413,55 @@ void main() {
     });
   });
 
+  group('getPendingFileSizes', () {
+    test('returns the checksum, type and file size of the remote asset of each pending deletion', () async {
+      final image = await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1');
+      final video = await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-2', type: AssetType.video);
+      final unknownSize = await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-3');
+      final noExif = await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-4');
+      await ctx.newRemoteExif(assetId: image.id, fileSize: 1234);
+      await ctx.newRemoteExif(assetId: video.id, fileSize: 5678);
+      await ctx.newRemoteExif(assetId: unknownSize.id);
+      await sut.upsert(userId, {
+        image.id: 'checksum-1',
+        video.id: 'checksum-2',
+        unknownSize.id: 'checksum-3',
+        noExif.id: 'checksum-4',
+      });
+
+      final result = await sut.getPendingFileSizes([image.id, video.id, unknownSize.id, noExif.id]);
+
+      expect(result, {
+        image.id: (checksum: 'checksum-1', type: AssetType.image.index, fileSize: 1234),
+        video.id: (checksum: 'checksum-2', type: AssetType.video.index, fileSize: 5678),
+      });
+    });
+
+    test('returns only the requested deletions', () async {
+      final remote = await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1');
+      final other = await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-2');
+      await ctx.newRemoteExif(assetId: remote.id, fileSize: 1234);
+      await ctx.newRemoteExif(assetId: other.id, fileSize: 1234);
+      await sut.upsert(userId, {remote.id: 'checksum-1', other.id: 'checksum-2'});
+
+      expect((await sut.getPendingFileSizes([remote.id])).keys, [remote.id]);
+    });
+  });
+
+  group('getUnhashedByIds', () {
+    test('returns the type of the given assets that have no checksum', () async {
+      final image = await ctx.newLocalAsset(checksumOption: const Option.none());
+      final video = await ctx.newLocalAsset(type: AssetType.video, checksumOption: const Option.none());
+      final hashed = await ctx.newLocalAsset();
+      await ctx.newLocalAsset(checksumOption: const Option.none());
+
+      expect(await sut.getUnhashedByIds([image.id, video.id, hashed.id, 'unknown']), {
+        image.id: AssetType.image.index,
+        video.id: AssetType.video.index,
+      });
+    });
+  });
+
   group('clearQueue', () {
     test('removes every queue row but keeps the exclusions', () async {
       await sut.upsert(userId, {'remote-1': 'checksum-1'});
