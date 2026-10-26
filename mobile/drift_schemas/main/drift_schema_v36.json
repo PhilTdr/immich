@@ -3085,6 +3085,16 @@
             "default_dart": "const CustomExpression('CURRENT_TIMESTAMP')",
             "default_client_dart": null,
             "dsl_features": []
+          },
+          {
+            "name": "trashed_at",
+            "getter_name": "trashedAt",
+            "moor_type": "string",
+            "nullable": true,
+            "customConstraints": null,
+            "default_dart": null,
+            "default_client_dart": null,
+            "dsl_features": []
           }
         ],
         "is_virtual": false,
@@ -3637,7 +3647,7 @@
       "sql": [
         {
           "dialect": "sqlite",
-          "sql": "CREATE TABLE IF NOT EXISTS \"local_deletion_entity\" (\"remote_id\" TEXT NOT NULL, \"checksum\" TEXT NOT NULL, \"owner_id\" TEXT NOT NULL, \"created_at\" TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP), PRIMARY KEY (\"remote_id\")) WITHOUT ROWID, STRICT;"
+          "sql": "CREATE TABLE IF NOT EXISTS \"local_deletion_entity\" (\"remote_id\" TEXT NOT NULL, \"checksum\" TEXT NOT NULL, \"owner_id\" TEXT NOT NULL, \"created_at\" TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP), \"trashed_at\" TEXT NULL, PRIMARY KEY (\"remote_id\")) WITHOUT ROWID, STRICT;"
         }
       ]
     },

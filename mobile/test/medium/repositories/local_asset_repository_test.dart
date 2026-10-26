@@ -1,7 +1,9 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:immich_mobile/constants/enums.dart';
+import 'package:immich_mobile/domain/models/album/local_album.model.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/infrastructure/repositories/local_asset.repository.dart';
+import 'package:immich_mobile/infrastructure/repositories/local_deletion.repository.dart';
 import 'package:immich_mobile/utils/option.dart';
 
 import '../repository_context.dart';
@@ -632,6 +634,40 @@ void main() {
       await sut.reconcileHashesFromCloudId();
       final updated = await sut.getById(localAsset.id);
       expect(updated?.checksum, isNull);
+    });
+  });
+
+  group('getAssetsFromBackupAlbums', () {
+    late String userId;
+
+    setUp(() async {
+      userId = (await ctx.newUser()).id;
+    });
+
+    Future<String> addLocalAssetToBackupAlbum(String checksum) async {
+      final album = await ctx.newLocalAlbum(backupSelection: BackupSelection.selected);
+      final local = await ctx.newLocalAsset(checksum: checksum);
+      await ctx.newLocalAlbumAsset(albumId: album.id, assetId: local.id);
+      return local.id;
+    }
+
+    test('returns the files in backup albums of the given remote assets', () async {
+      final localId = await addLocalAssetToBackupAlbum('checksum-1');
+      final remote = await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1');
+
+      final result = await sut.getAssetsFromBackupAlbums([remote.id]);
+
+      expect(result.values.expand((assets) => assets).map((a) => a.id), [localId]);
+    });
+
+    test('skips the file of an asset this device deleted and the user brought back', () async {
+      await addLocalAssetToBackupAlbum('checksum-1');
+      final remote = await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1', deletedAt: DateTime(2024));
+      final deletions = LocalDeletionRepository(ctx.db);
+      await deletions.upsert(userId, {remote.id: 'checksum-1'});
+      await deletions.markTrashed([remote.id]);
+
+      expect(await sut.getAssetsFromBackupAlbums([remote.id]), isEmpty);
     });
   });
 

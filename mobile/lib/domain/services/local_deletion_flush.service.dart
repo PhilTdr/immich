@@ -66,9 +66,12 @@ class LocalDeletionFlushService {
     await flushPendingDeletions(ownerId);
   }
 
-  /// Pushes pending deletions to the server trash. Rows are kept on transient failures and retried on the next flush
+  /// Pushes pending deletions to the server trash and restores the server copy of flushed deletions whose file is
+  /// back on the device. Rows are kept on transient failures and retried on the next flush
   @visibleForTesting
   Future<void> flushPendingDeletions(String ownerId) async {
+    await _localDeletionRepository.pruneFlushed();
+    await _restoreReturned(ownerId);
     await _localDeletionRepository.pruneAlreadyTrashed();
     await _localDeletionRepository.pruneRestored(ownerId);
     final settledBefore = DateTime.now().subtract(kLocalDeletionSettleDuration);
@@ -117,13 +120,55 @@ class LocalDeletionFlushService {
       } on ApiException catch (e, s) {
         if (_isServerRejection(e)) {
           // The server rejects a batch if any id no longer exists.
-          await _flushIndividually(chunk);
+          await _sendIndividually(
+            chunk,
+            _assetService.trash,
+            onAccepted: _localDeletionRepository.markTrashed,
+            onRejected: _localDeletionRepository.deleteByRemoteIds,
+          );
           continue;
         }
         _log.warning("Failed to move ${chunk.length} deletions to the server trash. Will retry next sync", e, s);
         return;
       } catch (e, s) {
         _log.warning("Failed to move ${chunk.length} deletions to the server trash. Will retry next sync", e, s);
+        return;
+      }
+      await _localDeletionRepository.markTrashed(chunk);
+    }
+  }
+
+  /// Restores the server copy of flushed deletions whose file is back on the device, e.g. restored from the device
+  /// trash. The backup counts such a file as backed up by the trashed copy and never uploads it again. A restored row
+  /// leaves the queue, so a later trash from elsewhere is not undone. A row the server rejects stays until the sync
+  /// drops its remote asset, so the purge does not move the restored file back to the device trash
+  Future<void> _restoreReturned(String ownerId) async {
+    final remoteIds = await _localDeletionRepository.getRestored(ownerId);
+    if (remoteIds.isEmpty) {
+      return;
+    }
+
+    _log.info("Restoring the server copy of ${remoteIds.length} deleted assets that are back on the device");
+    for (final chunk in remoteIds.slices(_kDeletionFlushChunkSize)) {
+      if (_isCancelled) {
+        return;
+      }
+      try {
+        await _assetService.restoreTrash(chunk);
+      } on ApiException catch (e, s) {
+        if (_isServerRejection(e)) {
+          await _sendIndividually(
+            chunk,
+            _assetService.restoreTrash,
+            onAccepted: _localDeletionRepository.deleteByRemoteIds,
+            onRejected: (_) async {},
+          );
+          continue;
+        }
+        _log.warning("Failed to restore ${chunk.length} assets from the server trash. Will retry next sync", e, s);
+        return;
+      } catch (e, s) {
+        _log.warning("Failed to restore ${chunk.length} assets from the server trash. Will retry next sync", e, s);
         return;
       }
       await _localDeletionRepository.deleteByRemoteIds(chunk);
@@ -211,24 +256,33 @@ class LocalDeletionFlushService {
     }
   }
 
-  Future<void> _flushIndividually(List<String> remoteIds) async {
+  /// Sends [remoteIds] one at a time with [send] after the server rejected their batch, and passes each id on to
+  /// [onAccepted] or [onRejected]
+  Future<void> _sendIndividually(
+    List<String> remoteIds,
+    Future<void> Function(List<String> remoteIds) send, {
+    required Future<void> Function(List<String> remoteIds) onAccepted,
+    required Future<void> Function(List<String> remoteIds) onRejected,
+  }) async {
     for (final remoteId in remoteIds) {
       if (_isCancelled || !await _stillEnabled()) {
         return;
       }
       try {
-        await _assetService.trash([remoteId]);
+        await send([remoteId]);
       } on ApiException catch (e, s) {
         if (!_isServerRejection(e)) {
-          _log.warning("Failed to move a deletion to the server trash. Will retry next sync", e, s);
+          _log.warning("Failed to sync a deletion with the server. Will retry next sync", e, s);
           return;
         }
-        _log.warning("Dropping the deletion of $remoteId: rejected by the server");
+        _log.warning("The server rejected the deleted asset $remoteId");
+        await onRejected([remoteId]);
+        continue;
       } catch (e, s) {
-        _log.warning("Failed to move a deletion to the server trash. Will retry next sync", e, s);
+        _log.warning("Failed to sync a deletion with the server. Will retry next sync", e, s);
         return;
       }
-      await _localDeletionRepository.deleteByRemoteIds([remoteId]);
+      await onAccepted([remoteId]);
     }
   }
 

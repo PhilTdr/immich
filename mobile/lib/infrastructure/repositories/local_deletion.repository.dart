@@ -19,13 +19,17 @@ class LocalDeletionRepository extends DatabaseAccessor<Drift> with $LocalDeletio
 
   Drift get _db => attachedDatabase;
 
-  /// Queues [remoteIdToChecksum] as deletions of [ownerId] pending a server move-to-trash
+  /// Queues [remoteIdToChecksum] as deletions of [ownerId] pending a server move-to-trash. A flushed deletion of the
+  /// same asset is replaced, so a file that came back and was deleted again settles anew
   Future<void> upsert(String ownerId, Map<String, String> remoteIdToChecksum) async {
     if (remoteIdToChecksum.isEmpty) {
       return;
     }
 
     await _db.batch((batch) {
+      for (final slice in remoteIdToChecksum.keys.slices(kDriftMaxChunk)) {
+        batch.deleteWhere(_db.localDeletionEntity, (row) => row.remoteId.isIn(slice) & row.trashedAt.isNotNull());
+      }
       for (final entry in remoteIdToChecksum.entries) {
         final companion = LocalDeletionEntityCompanion.insert(
           remoteId: entry.key,
@@ -69,6 +73,7 @@ class LocalDeletionRepository extends DatabaseAccessor<Drift> with $LocalDeletio
       ..addColumns([_db.localDeletionEntity.remoteId])
       ..where(
         _db.localDeletionEntity.ownerId.equals(ownerId) &
+            _db.localDeletionEntity.trashedAt.isNull() &
             _db.localDeletionEntity.createdAt.isSmallerThanValue(settledBefore),
       );
     return query.map((row) => row.read(_db.localDeletionEntity.remoteId)!).get();
@@ -80,7 +85,7 @@ class LocalDeletionRepository extends DatabaseAccessor<Drift> with $LocalDeletio
     final remote = _db.remoteAssetEntity;
     final query = _db.selectOnly(deletion).join([leftOuterJoin(remote, remote.id.equalsExp(deletion.remoteId))])
       ..addColumns([deletion.remoteId, deletion.createdAt, remote.name, remote.thumbHash])
-      ..where(deletion.ownerId.equals(ownerId))
+      ..where(deletion.ownerId.equals(ownerId) & deletion.trashedAt.isNull())
       ..orderBy([OrderingTerm.asc(deletion.createdAt)]);
     return query
         .map(
@@ -104,27 +109,78 @@ class LocalDeletionRepository extends DatabaseAccessor<Drift> with $LocalDeletio
     }
   }
 
-  /// Drops intents whose remote asset is already in the server trash
+  /// Drops pending intents whose remote asset is already in the server trash
   Future<void> pruneAlreadyTrashed() {
     return (_db.delete(_db.localDeletionEntity)..where(
-          (row) => existsQuery(
-            _db.remoteAssetEntity.selectOnly()
-              ..addColumns([_db.remoteAssetEntity.id])
-              ..where(_db.remoteAssetEntity.id.equalsExp(row.remoteId) & _db.remoteAssetEntity.deletedAt.isNotNull()),
-          ),
+          (row) =>
+              row.trashedAt.isNull() &
+              existsQuery(
+                _db.remoteAssetEntity.selectOnly()
+                  ..addColumns([_db.remoteAssetEntity.id])
+                  ..where(
+                    _db.remoteAssetEntity.id.equalsExp(row.remoteId) & _db.remoteAssetEntity.deletedAt.isNotNull(),
+                  ),
+              ),
         ))
         .go();
   }
 
-  /// Drops intents of [ownerId] whose content is still on the device, e.g. restored or moved copies
+  /// Drops pending intents of [ownerId] whose content is still on the device, e.g. restored or moved copies
   Future<void> pruneRestored(String ownerId) {
     return (_db.delete(_db.localDeletionEntity)..where(
           (row) =>
               row.ownerId.equals(ownerId) &
+              row.trashedAt.isNull() &
               existsQuery(
                 _db.localAssetEntity.selectOnly()
                   ..addColumns([_db.localAssetEntity.id])
                   ..where(_db.localAssetEntity.checksum.equalsExp(row.checksum)),
+              ),
+        ))
+        .go();
+  }
+
+  /// Marks the given deletions as flushed. They stay while their server copy is in the trash, see [getRestored]
+  Future<void> markTrashed(Iterable<String> remoteIds) async {
+    for (final slice in remoteIds.toSet().slices(kDriftMaxChunk)) {
+      await (_db.update(_db.localDeletionEntity)..where((row) => row.remoteId.isIn(slice))).write(
+        LocalDeletionEntityCompanion(trashedAt: Value(DateTime.now())),
+      );
+    }
+  }
+
+  /// The flushed deletions of [ownerId] whose content is back on the device while their server copy is still in the
+  /// trash, e.g. a file restored from the device trash
+  Future<List<String>> getRestored(String ownerId) {
+    final deletion = _db.localDeletionEntity;
+    final remote = _db.remoteAssetEntity;
+    final query =
+        _db.selectOnly(deletion).join([innerJoin(remote, remote.id.equalsExp(deletion.remoteId), useColumns: false)])
+          ..addColumns([deletion.remoteId])
+          ..where(
+            deletion.ownerId.equals(ownerId) &
+                deletion.trashedAt.isNotNull() &
+                remote.deletedAt.isNotNull() &
+                existsQuery(
+                  _db.localAssetEntity.selectOnly()
+                    ..addColumns([_db.localAssetEntity.id])
+                    ..where(_db.localAssetEntity.checksum.equalsExp(deletion.checksum)),
+                ),
+          );
+    return query.map((row) => row.read(deletion.remoteId)!).get();
+  }
+
+  /// Drops the flushed deletions whose server copy left the trash, restored or permanently deleted
+  Future<void> pruneFlushed() {
+    return (_db.delete(_db.localDeletionEntity)..where(
+          (row) =>
+              row.trashedAt.isNotNull() &
+              notExistsQuery(
+                _db.remoteAssetEntity.selectOnly()
+                  ..addColumns([_db.remoteAssetEntity.id])
+                  ..where(
+                    _db.remoteAssetEntity.id.equalsExp(row.remoteId) & _db.remoteAssetEntity.deletedAt.isNotNull(),
+                  ),
               ),
         ))
         .go();

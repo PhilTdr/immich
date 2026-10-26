@@ -63,6 +63,9 @@ void main() {
     when(() => devicePermissionService.galleryStatus()).thenAnswer((_) async => DevicePermissionStatus.granted);
     when(() => mocks.localDeletion.repo.pruneAlreadyTrashed()).thenAnswer((_) async {});
     when(() => mocks.localDeletion.repo.pruneRestored(any())).thenAnswer((_) async {});
+    when(() => mocks.localDeletion.repo.pruneFlushed()).thenAnswer((_) async {});
+    when(() => mocks.localDeletion.repo.getRestored(any())).thenAnswer((_) async => []);
+    when(() => mocks.localDeletion.repo.markTrashed(any())).thenAnswer((_) async {});
     when(
       () => mocks.localDeletion.repo.getPending(any(), settledBefore: any(named: 'settledBefore')),
     ).thenAnswer((_) async => []);
@@ -74,7 +77,7 @@ void main() {
 
   group('LocalDeletionFlushService', () {
     group('flushPendingDeletions', () {
-      test('moves pending deletions to the server trash and clears their queue rows', () async {
+      test('moves pending deletions to the server trash and keeps their queue rows as flushed', () async {
         when(
           () => mocks.localDeletion.repo.getPending(any(), settledBefore: any(named: 'settledBefore')),
         ).thenAnswer((_) async => ['remote-1', 'remote-2']);
@@ -82,12 +85,15 @@ void main() {
         await sut.flushPendingDeletions('owner-1');
 
         verifyInOrder([
+          () => mocks.localDeletion.repo.pruneFlushed(),
+          () => mocks.localDeletion.repo.getRestored('owner-1'),
           () => mocks.localDeletion.repo.pruneAlreadyTrashed(),
           () => mocks.localDeletion.repo.pruneRestored('owner-1'),
           () => mocks.localDeletion.repo.getPending('owner-1', settledBefore: any(named: 'settledBefore')),
           () => services.asset.service.trash(['remote-1', 'remote-2']),
-          () => mocks.localDeletion.repo.deleteByRemoteIds(['remote-1', 'remote-2']),
+          () => mocks.localDeletion.repo.markTrashed(['remote-1', 'remote-2']),
         ]);
+        verifyNever(() => mocks.localDeletion.repo.deleteByRemoteIds(any()));
       });
 
       for (final (name, error) in [
@@ -108,6 +114,8 @@ void main() {
           await sut.flushPendingDeletions('owner-1');
 
           verifyNever(() => mocks.localDeletion.repo.deleteByRemoteIds(any()));
+
+          verifyNever(() => mocks.localDeletion.repo.markTrashed(any()));
         });
       }
 
@@ -126,7 +134,7 @@ void main() {
 
         verify(() => mocks.localDeletion.repo.deleteByRemoteIds(['remote-dead'])).called(1);
         verify(() => services.asset.service.trash(['remote-2'])).called(1);
-        verify(() => mocks.localDeletion.repo.deleteByRemoteIds(['remote-2'])).called(1);
+        verify(() => mocks.localDeletion.repo.markTrashed(['remote-2'])).called(1);
       });
 
       test('stops the individual flush when cancelled', () async {
@@ -176,6 +184,7 @@ void main() {
 
           verifyNever(services.asset.trash);
           verifyNever(() => mocks.localDeletion.repo.deleteByRemoteIds(any()));
+          verifyNever(() => mocks.localDeletion.repo.markTrashed(any()));
         });
       }
 
@@ -265,7 +274,7 @@ void main() {
         await sut.flushPendingDeletions('owner-1');
 
         verify(() => services.asset.service.trash(['remote-2'])).called(1);
-        verify(() => mocks.localDeletion.repo.deleteByRemoteIds(['remote-2'])).called(1);
+        verify(() => mocks.localDeletion.repo.markTrashed(['remote-2'])).called(1);
         verifyNever(() => mocks.localDeletion.repo.deleteByRemoteIds(['remote-1']));
       });
 
@@ -371,12 +380,64 @@ void main() {
       });
     });
 
+    group('restoring returned files', () {
+      test('restores the server copy of flushed deletions whose file is back on the device', () async {
+        when(() => mocks.localDeletion.repo.getRestored(any())).thenAnswer((_) async => ['remote-1', 'remote-2']);
+
+        await sut.flushPendingDeletions('owner-1');
+
+        verifyInOrder([
+          () => mocks.localDeletion.repo.pruneFlushed(),
+          () => mocks.localDeletion.repo.getRestored('owner-1'),
+          () => services.asset.service.restoreTrash(['remote-1', 'remote-2']),
+          () => mocks.localDeletion.repo.deleteByRemoteIds(['remote-1', 'remote-2']),
+        ]);
+      });
+
+      test('keeps the rows the server rejects and restores the rest', () async {
+        when(() => mocks.localDeletion.repo.getRestored(any())).thenAnswer((_) async => ['remote-dead', 'remote-2']);
+        when(() => services.asset.service.restoreTrash(any())).thenAnswer((invocation) async {
+          final ids = invocation.positionalArguments.first as List<String>;
+          if (ids.length > 1 || ids.single == 'remote-dead') {
+            throw ApiException(400, 'Not found or no asset.delete access');
+          }
+        });
+
+        await sut.flushPendingDeletions('owner-1');
+
+        // The sync drops the remote asset of a rejected id, until then its row keeps the file out of the device trash
+        verifyNever(() => mocks.localDeletion.repo.deleteByRemoteIds(['remote-dead']));
+        verify(() => services.asset.service.restoreTrash(['remote-2'])).called(1);
+        verify(() => mocks.localDeletion.repo.deleteByRemoteIds(['remote-2'])).called(1);
+      });
+
+      test('keeps the rows and still flushes pending deletions when the restore fails', () async {
+        when(() => mocks.localDeletion.repo.getRestored(any())).thenAnswer((_) async => ['remote-1']);
+        when(() => services.asset.service.restoreTrash(any())).thenThrow(Exception('network'));
+        when(
+          () => mocks.localDeletion.repo.getPending(any(), settledBefore: any(named: 'settledBefore')),
+        ).thenAnswer((_) async => ['remote-2']);
+
+        await sut.flushPendingDeletions('owner-1');
+
+        verifyNever(() => mocks.localDeletion.repo.deleteByRemoteIds(any()));
+        verify(() => services.asset.service.trash(['remote-2'])).called(1);
+      });
+
+      test('does not call the server when no file came back', () async {
+        await sut.flushPendingDeletions('owner-1');
+
+        verifyNever(services.asset.restoreTrash);
+      });
+    });
+
     group('flush', () {
       test('does nothing when the feature is disabled', () async {
         await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletions, false);
 
         await sut.flush();
 
+        verifyNever(() => mocks.localDeletion.repo.getRestored(any()));
         verifyNever(() => mocks.localDeletion.repo.pruneAlreadyTrashed());
         verifyNever(() => mocks.localDeletion.repo.getPending(any(), settledBefore: any(named: 'settledBefore')));
       });

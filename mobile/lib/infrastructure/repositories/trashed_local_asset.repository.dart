@@ -286,7 +286,13 @@ class TrashedLocalAssetRepository extends DatabaseAccessor<Drift> with $TrashedL
               ),
             ])..where(
               _db.localAlbumEntity.backupSelection.equalsValue(BackupSelection.selected) &
-                  _db.remoteAssetEntity.deletedAt.isNotNull(),
+                  _db.remoteAssetEntity.deletedAt.isNotNull() &
+                  // The deletion sync restores the server copy of a file brought back after this device deleted it
+                  _db.remoteAssetEntity.id.isNotInQuery(
+                    _db.selectOnly(_db.localDeletionEntity)
+                      ..addColumns([_db.localDeletionEntity.remoteId])
+                      ..where(_db.localDeletionEntity.trashedAt.isNotNull()),
+                  ),
             ))
             .get();
 

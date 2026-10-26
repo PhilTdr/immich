@@ -208,6 +208,80 @@ void main() {
     });
   });
 
+  group('flushed deletions', () {
+    test('markTrashed keeps the row but takes it out of the pending queue', () async {
+      await sut.upsert(userId, {'remote-1': 'checksum-1', 'remote-2': 'checksum-2'});
+
+      await sut.markTrashed(['remote-1']);
+
+      expect(await queuedRemoteIds(), {'remote-1', 'remote-2'});
+      expect(await sut.getPending(userId, settledBefore: DateTime.now().add(const Duration(minutes: 1))), ['remote-2']);
+      expect((await sut.watchPending(userId).first).map((p) => p.remoteId), ['remote-2']);
+    });
+
+    test('the prunes of pending intents keep flushed deletions', () async {
+      final trashed = await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1', deletedAt: DateTime(2024));
+      await ctx.newLocalAsset(checksum: 'checksum-1');
+      await sut.upsert(userId, {trashed.id: 'checksum-1'});
+      await sut.markTrashed([trashed.id]);
+
+      await sut.pruneAlreadyTrashed();
+      await sut.pruneRestored(userId);
+
+      expect(await queuedRemoteIds(), {trashed.id});
+    });
+
+    test('upsert queues a flushed deletion anew', () async {
+      await sut.upsert(userId, {'remote-1': 'checksum-1'});
+      await backdate('remote-1', DateTime.utc(2024));
+      await sut.markTrashed(['remote-1']);
+
+      await sut.upsert(userId, {'remote-1': 'checksum-1'});
+
+      final settledBefore = DateTime.now().subtract(kLocalDeletionSettleDuration);
+      expect(await sut.getPending(userId, settledBefore: settledBefore), isEmpty);
+      expect(await sut.getPending(userId, settledBefore: DateTime.now().add(const Duration(minutes: 1))), ['remote-1']);
+    });
+
+    test('getRestored returns the flushed deletions whose content is back while the server copy is trashed', () async {
+      final restored = await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1', deletedAt: DateTime(2024));
+      final notBack = await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-2', deletedAt: DateTime(2024));
+      final active = await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-3');
+      final pending = await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-4', deletedAt: DateTime(2024));
+      final otherUserId = (await ctx.newUser()).id;
+      final other = await ctx.newRemoteAsset(ownerId: otherUserId, checksum: 'checksum-1', deletedAt: DateTime(2024));
+      for (final checksum in ['checksum-1', 'checksum-3', 'checksum-4']) {
+        await ctx.newLocalAsset(checksum: checksum);
+      }
+      await sut.upsert(userId, {
+        restored.id: 'checksum-1',
+        notBack.id: 'checksum-2',
+        active.id: 'checksum-3',
+        pending.id: 'checksum-4',
+      });
+      await sut.upsert(otherUserId, {other.id: 'checksum-1'});
+      await sut.markTrashed([restored.id, notBack.id, active.id, other.id]);
+
+      expect(await sut.getRestored(userId), [restored.id]);
+    });
+
+    test('pruneFlushed drops the flushed deletions whose server copy left the trash', () async {
+      final trashed = await ctx.newRemoteAsset(ownerId: userId, deletedAt: DateTime(2024));
+      final restoredOnServer = await ctx.newRemoteAsset(ownerId: userId);
+      await sut.upsert(userId, {
+        trashed.id: 'checksum-1',
+        restoredOnServer.id: 'checksum-2',
+        'remote-purged': 'checksum-3',
+        'remote-pending': 'checksum-4',
+      });
+      await sut.markTrashed([trashed.id, restoredOnServer.id, 'remote-purged']);
+
+      await sut.pruneFlushed();
+
+      expect(await queuedRemoteIds(), {trashed.id, 'remote-pending'});
+    });
+  });
+
   group('exclusions', () {
     test('markExcluded / getExcluded / unmarkExcluded round-trip', () async {
       await sut.markExcluded(['local-1', 'local-2']);

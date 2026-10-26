@@ -142,7 +142,13 @@ class LocalAssetRepository extends DatabaseAccessor<Drift> with $LocalAssetRepos
                 ),
               ])..where(
                 _db.localAlbumEntity.backupSelection.equalsValue(BackupSelection.selected) &
-                    _db.remoteAssetEntity.id.isIn(slice),
+                    _db.remoteAssetEntity.id.isIn(slice) &
+                    // The file of an asset this device deleted is back only because the user restored it
+                    _db.remoteAssetEntity.id.isNotInQuery(
+                      _db.selectOnly(_db.localDeletionEntity)
+                        ..addColumns([_db.localDeletionEntity.remoteId])
+                        ..where(_db.localDeletionEntity.trashedAt.isNotNull()),
+                    ),
               ))
               .get();
 
