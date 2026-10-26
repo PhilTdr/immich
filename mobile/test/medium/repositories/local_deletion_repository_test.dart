@@ -118,6 +118,15 @@ void main() {
 
       expect(await sut.getBackedUp(userId, ['local-1']), isEmpty);
     });
+
+    test('ignores assets of iOS shared albums', () async {
+      final album = await ctx.newLocalAlbum(isIosSharedAlbum: true);
+      await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1');
+      await ctx.newLocalAsset(id: 'local-1', checksum: 'checksum-1');
+      await ctx.newLocalAlbumAsset(albumId: album.id, assetId: 'local-1');
+
+      expect(await sut.getBackedUp(userId, ['local-1']), isEmpty);
+    });
   });
 
   group('getPending', () {
@@ -391,6 +400,24 @@ void main() {
       final result = await sut.getSnapshotDeletionCandidates(snapshotId);
 
       expect(result.candidates, isEmpty);
+    });
+
+    test('ignores assets of iOS shared albums', () async {
+      final shared = await ctx.newLocalAlbum(isIosSharedAlbum: true);
+      final regular = await ctx.newLocalAlbum();
+      await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-shared');
+      final regularRemote = await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-regular');
+      await ctx.newLocalAsset(id: 'local-shared', checksum: 'checksum-shared');
+      await ctx.newLocalAsset(id: 'local-regular', checksum: 'checksum-regular');
+      await ctx.newLocalAlbumAsset(albumId: shared.id, assetId: 'local-shared');
+      await ctx.newLocalAlbumAsset(albumId: regular.id, assetId: 'local-regular');
+
+      final snapshotId = await sut.snapshotBackedUpAssets(userId);
+      await ctx.db.managers.localAssetEntity.filter((r) => r.id.isIn(['local-shared', 'local-regular'])).delete();
+      final result = await sut.getSnapshotDeletionCandidates(snapshotId);
+
+      expect(result.total, 1);
+      expect(result.candidates.map((c) => c.remoteId), [regularRemote.id]);
     });
 
     test('detection without a prior snapshot returns nothing', () async {
