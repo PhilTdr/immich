@@ -127,6 +127,15 @@ void main() {
 
       expect(await sut.getBackedUp(userId, ['local-1']), isEmpty);
     });
+
+    test('includes assets of iOS shared albums when asked', () async {
+      final album = await ctx.newLocalAlbum(isIosSharedAlbum: true);
+      final remote = await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1');
+      await ctx.newLocalAsset(id: 'local-1', checksum: 'checksum-1');
+      await ctx.newLocalAlbumAsset(albumId: album.id, assetId: 'local-1');
+
+      expect(await sut.getBackedUp(userId, ['local-1'], includeIosSharedAlbums: true), {remote.id: 'checksum-1'});
+    });
   });
 
   group('getPending', () {
@@ -420,6 +429,19 @@ void main() {
       expect(result.candidates.map((c) => c.remoteId), [regularRemote.id]);
     });
 
+    test('includes assets of iOS shared albums when asked', () async {
+      final album = await ctx.newLocalAlbum(isIosSharedAlbum: true);
+      final remote = await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1');
+      await ctx.newLocalAsset(id: 'local-1', checksum: 'checksum-1');
+      await ctx.newLocalAlbumAsset(albumId: album.id, assetId: 'local-1');
+
+      final snapshotId = await sut.snapshotBackedUpAssets(userId, includeIosSharedAlbums: true);
+      await ctx.db.managers.localAssetEntity.filter((r) => r.id.equals('local-1')).delete();
+      final result = await sut.getSnapshotDeletionCandidates(snapshotId);
+
+      expect(result.candidates.map((c) => c.remoteId), [remote.id]);
+    });
+
     test('detection without a prior snapshot returns nothing', () async {
       await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1');
 
@@ -573,6 +595,17 @@ void main() {
 
       expect(await queuedRemoteIds(), isEmpty);
       expect(await excludedLocalIds(), {'local-1'});
+    });
+  });
+
+  group('clearPending', () {
+    test('removes the pending deletions but keeps the flushed ones', () async {
+      await sut.upsert(userId, {'remote-1': 'checksum-1', 'remote-2': 'checksum-2'});
+      await sut.markTrashed(['remote-2']);
+
+      await sut.clearPending();
+
+      expect(await queuedRemoteIds(), {'remote-2'});
     });
   });
 }

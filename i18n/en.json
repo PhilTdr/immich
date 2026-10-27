@@ -2167,6 +2167,8 @@
   "sync_albums": "Sync albums",
   "sync_deletions": "Sync deleted photos and videos",
   "sync_local": "Sync Local",
+  "sync_local_deletions_in_ios_shared_albums_setting_description": "Photos and videos that are removed from an iCloud shared album, also by another member, will also be moved to the trash on the server",
+  "sync_local_deletions_in_ios_shared_albums_setting_title": "Deleted in iCloud shared albums",
   "sync_local_deletions_setting_description": "Photos and videos that have been deleted in other apps will also be moved to the trash on the server",
   "sync_local_deletions_setting_description_without_permission": "Photos and videos that have been deleted in other apps will also be moved to the trash on the server. Requires full access to the photo library",
   "sync_local_deletions_setting_title": "Deleted on device",

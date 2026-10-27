@@ -74,6 +74,7 @@ abstract class AppConfig with _$AppConfig {
             .backupSyncAlbums => backup.syncAlbums,
             .backupSyncLocalDeletions => backup.syncLocalDeletions,
             .backupSyncLocalMovesOutOfBackupAsDeletion => backup.syncLocalMovesOutOfBackupAsDeletion,
+            .backupSyncLocalDeletionsInIosSharedAlbums => backup.syncLocalDeletionsInIosSharedAlbums,
             .timelineTilesPerRow => timeline.tilesPerRow,
             .timelineGroupAssetsBy => timeline.groupAssetsBy,
             .timelineStorageIndicator => timeline.storageIndicator,
@@ -134,6 +135,9 @@ abstract class AppConfig with _$AppConfig {
       .backupSyncLocalDeletions => copyWith(backup: backup.copyWith(syncLocalDeletions: value as bool)),
       .backupSyncLocalMovesOutOfBackupAsDeletion => copyWith(
         backup: backup.copyWith(syncLocalMovesOutOfBackupAsDeletion: value as bool),
+      ),
+      .backupSyncLocalDeletionsInIosSharedAlbums => copyWith(
+        backup: backup.copyWith(syncLocalDeletionsInIosSharedAlbums: value as bool),
       ),
       .timelineTilesPerRow => copyWith(timeline: timeline.copyWith(tilesPerRow: value as int)),
       .timelineGroupAssetsBy => copyWith(timeline: timeline.copyWith(groupAssetsBy: value as GroupAssetsBy)),

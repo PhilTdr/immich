@@ -508,6 +508,8 @@ class NativeSyncApiImpl: ImmichPlugin, NativeSyncApi, FlutterPlugin {
 
     let options = PHFetchOptions()
     options.includeHiddenAssets = true
+    // Assets of iCloud shared albums must count as present too
+    options.includeAssetSourceTypes = [.typeUserLibrary, .typeCloudShared, .typeiTunesSynced]
     var existing: [String] = []
     let result = PHAsset.fetchAssets(withLocalIdentifiers: assetIds, options: options)
     result.enumerateObjects { (asset, _, _) in

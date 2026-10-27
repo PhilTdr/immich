@@ -14,5 +14,6 @@ abstract class BackupConfig with _$BackupConfig {
     @Default(false) bool syncAlbums,
     @Default(false) bool syncLocalDeletions,
     @Default(false) bool syncLocalMovesOutOfBackupAsDeletion,
+    @Default(false) bool syncLocalDeletionsInIosSharedAlbums,
   }) = _BackupConfig;
 }

@@ -324,14 +324,45 @@ class _SyncLocalDeletionsButton extends ConsumerWidget {
           },
         ),
         // iOS albums only reference assets, so nothing is moved out of a backed-up album there
-        if (CurrentPlatform.isAndroid) const _SyncLocalMovesOutOfBackupAsDeletionButton(),
+        if (CurrentPlatform.isAndroid)
+          _SyncLocalDeletionsOption(
+            metadataKey: SettingsKey.backupSyncLocalMovesOutOfBackupAsDeletion,
+            selector: (c) => c.backup.syncLocalMovesOutOfBackupAsDeletion,
+            title: context.t.sync_local_moves_out_of_backup_as_deletion_setting_title,
+            subtitle: context.t.sync_local_moves_out_of_backup_as_deletion_setting_description,
+          ),
+        if (CurrentPlatform.isIOS)
+          _SyncLocalDeletionsOption(
+            metadataKey: SettingsKey.backupSyncLocalDeletionsInIosSharedAlbums,
+            selector: (c) => c.backup.syncLocalDeletionsInIosSharedAlbums,
+            title: context.t.sync_local_deletions_in_ios_shared_albums_setting_title,
+            subtitle: context.t.sync_local_deletions_in_ios_shared_albums_setting_description,
+            // The queue does not keep which deletions came from shared albums, so every pending one is dropped
+            onChanged: (enabled) {
+              if (!enabled) {
+                unawaited(deletionRepository.clearPending());
+              }
+            },
+          ),
       ],
     );
   }
 }
 
-class _SyncLocalMovesOutOfBackupAsDeletionButton extends ConsumerWidget {
-  const _SyncLocalMovesOutOfBackupAsDeletionButton();
+class _SyncLocalDeletionsOption extends ConsumerWidget {
+  final SettingsKey<bool> metadataKey;
+  final bool Function(AppConfig) selector;
+  final String title;
+  final String subtitle;
+  final void Function(bool)? onChanged;
+
+  const _SyncLocalDeletionsOption({
+    required this.metadataKey,
+    required this.selector,
+    required this.title,
+    required this.subtitle,
+    this.onChanged,
+  });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -344,10 +375,11 @@ class _SyncLocalMovesOutOfBackupAsDeletionButton extends ConsumerWidget {
         opacity: isDeletionSyncEnabled ? 1.0 : 0.0,
         child: isDeletionSyncEnabled
             ? _BackupSwitchTile(
-                metadataKey: SettingsKey.backupSyncLocalMovesOutOfBackupAsDeletion,
-                selector: (c) => c.backup.syncLocalMovesOutOfBackupAsDeletion,
-                title: context.t.sync_local_moves_out_of_backup_as_deletion_setting_title,
-                subtitle: context.t.sync_local_moves_out_of_backup_as_deletion_setting_description,
+                metadataKey: metadataKey,
+                selector: selector,
+                title: title,
+                subtitle: subtitle,
+                onChanged: onChanged,
                 contentPadding: const EdgeInsetsDirectional.only(start: 32, end: 24),
               )
             : const SizedBox.shrink(),

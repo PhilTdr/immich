@@ -140,10 +140,15 @@ class LocalSyncService {
         // On iOS, we need to full sync albums that are marked as cloud as the delta sync
         // does not include changes for cloud albums.
         final cloudAlbums = deviceAlbums.where((a) => a.isCloud).toLocalAlbums();
+        // The cloud album sync below removes the rows of assets that left a shared album, so snapshot them when their
+        // deletions are synced, like the Android delta
+        final cloudSnapshot = cloudAlbums.isNotEmpty && _syncLocalDeletionsInIosSharedAlbums
+            ? await _takeDeletionSnapshot()
+            : null;
         for (final album in cloudAlbums) {
           if (_isCancelled) {
             _log.warning("Local sync cancelled. Stopped processing cloud albums.");
-            return;
+            break;
           }
           final dbAlbum = dbAlbums.firstWhereOrNull((a) => a.id == album.id);
           if (dbAlbum == null) {
@@ -151,6 +156,14 @@ class LocalSyncService {
             continue;
           }
           await updateAlbum(dbAlbum, album);
+        }
+
+        // Also when cancelled, as no later sync can detect the rows removed so far
+        if (cloudSnapshot != null) {
+          await _detectAndQueueDeletionsFromSnapshot(cloudSnapshot);
+        }
+        if (_isCancelled) {
+          return;
         }
 
         await _resolveCloudIds(newAssets);
@@ -229,6 +242,7 @@ class LocalSyncService {
   Future<void> removeAlbum(LocalAlbum a) async {
     _log.fine("Removing device album ${a.name}");
     try {
+      await _excludeWholeIosSharedAlbum(a);
       // Asset deletion is handled in the repository
       await _localAlbumRepository.deleteAlbum(a.id);
     } catch (e, s) {
@@ -319,8 +333,10 @@ class LocalSyncService {
           : <LocalAsset>[];
       final assetsInDb = dbAlbum.assetCount > 0 ? await _localAlbumRepository.getAssets(dbAlbum.id) : <LocalAsset>[];
 
-      if (deviceAlbum.assetCount == 0) {
+      // Also when the album was counted but vanished before its assets were read
+      if (assetsInDevice.isEmpty) {
         _log.fine("Device album ${deviceAlbum.name} is empty. Removing assets from DB.");
+        await _excludeWholeIosSharedAlbum(dbAlbum);
         await _localAlbumRepository.upsert(
           deviceAlbum.copyWith(backupSelection: dbAlbum.backupSelection),
           toDelete: assetsInDb.map((a) => a.id),
@@ -409,6 +425,9 @@ class LocalSyncService {
 
   bool get _syncLocalDeletionsEnabled => SettingsRepository.instance.appConfig.backup.syncLocalDeletions;
 
+  bool get _syncLocalDeletionsInIosSharedAlbums =>
+      SettingsRepository.instance.appConfig.backup.syncLocalDeletionsInIosSharedAlbums;
+
   String? get _currentUserId => Store.tryGet(StoreKey.currentUser)?.id;
 
   Future<String?> _deletionSyncOwner() async {
@@ -427,7 +446,21 @@ class LocalSyncService {
     if (ownerId == null) {
       return null;
     }
-    return (ownerId: ownerId, id: await _localDeletionRepository.snapshotBackedUpAssets(ownerId));
+    final id = await _localDeletionRepository.snapshotBackedUpAssets(
+      ownerId,
+      includeIosSharedAlbums: _syncLocalDeletionsInIosSharedAlbums,
+    );
+    return (ownerId: ownerId, id: id);
+  }
+
+  /// A shared album that leaves the device or empties as a whole (Shared Albums turned off, album left, iCloud signed
+  /// out) is a device state change, not removals by its members. Its assets are excluded before their rows go, so
+  /// their server copies are not trashed. Only while deletions are detected, which consumes the exclusions again
+  Future<void> _excludeWholeIosSharedAlbum(LocalAlbum album) async {
+    if (!album.isIosSharedAlbum || !_syncLocalDeletionsInIosSharedAlbums || await _deletionSyncOwner() == null) {
+      return;
+    }
+    await _localDeletionRepository.markExcluded(await _localAlbumRepository.getAssetIds(album.id));
   }
 
   /// Detects deletions from the pre-reconciliation snapshot, re-verifying each
@@ -480,7 +513,12 @@ class LocalSyncService {
       return excluded;
     }
 
-    await _localDeletionRepository.upsert(ownerId, await _localDeletionRepository.getBackedUp(ownerId, ids));
+    final backedUp = await _localDeletionRepository.getBackedUp(
+      ownerId,
+      ids,
+      includeIosSharedAlbums: _syncLocalDeletionsInIosSharedAlbums,
+    );
+    await _localDeletionRepository.upsert(ownerId, backedUp);
     return excluded;
   }
 
