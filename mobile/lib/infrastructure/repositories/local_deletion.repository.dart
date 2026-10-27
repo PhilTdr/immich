@@ -50,34 +50,14 @@ class LocalDeletionRepository extends DatabaseAccessor<Drift> with $LocalDeletio
     Iterable<String> localIds, {
     bool includeIosSharedAlbums = false,
   }) async {
-    final iosSharedAlbumAssets = _db.localAlbumAssetEntity.selectOnly()
-      ..addColumns([_db.localAlbumAssetEntity.assetId])
-      ..join([
-        innerJoin(
-          _db.localAlbumEntity,
-          _db.localAlbumAssetEntity.albumId.equalsExp(_db.localAlbumEntity.id),
-          useColumns: false,
-        ),
-      ])
-      ..where(_db.localAlbumEntity.isIosSharedAlbum.equals(true));
     final result = <String, String>{};
     for (final slice in localIds.toSet().slices(kDriftMaxChunk)) {
       final query = _db.localAssetEntity.selectOnly()
         ..addColumns([_db.remoteAssetEntity.id, _db.remoteAssetEntity.checksum])
-        ..join([
-          innerJoin(
-            _db.remoteAssetEntity,
-            _db.remoteAssetEntity.checksum.equalsExp(_db.localAssetEntity.checksum) &
-                _db.remoteAssetEntity.ownerId.equals(ownerId) &
-                _db.remoteAssetEntity.deletedAt.isNull() &
-                _db.remoteAssetEntity.libraryId.isNull() &
-                _db.remoteAssetEntity.visibility.isNotInValues(const [AssetVisibility.hidden, AssetVisibility.locked]),
-            useColumns: false,
-          ),
-        ])
+        ..join([_backedUpCopy(ownerId)])
         ..where(_db.localAssetEntity.id.isIn(slice));
       if (!includeIosSharedAlbums) {
-        query.where(_db.localAssetEntity.id.isNotInQuery(iosSharedAlbumAssets));
+        query.where(_db.localAssetEntity.id.isNotInQuery(_iosSharedAlbumAssets()));
       }
       for (final row in await query.get()) {
         result[row.read(_db.remoteAssetEntity.id)!] = row.read(_db.remoteAssetEntity.checksum)!;
@@ -85,6 +65,38 @@ class LocalDeletionRepository extends DatabaseAccessor<Drift> with $LocalDeletio
     }
     return result;
   }
+
+  /// The number of backed-up copies of all local assets outside iOS shared albums, as in [getBackedUp], so the caller
+  /// can tell the whole library disappearing apart from deletions
+  Future<int> countBackedUp(String ownerId) {
+    final count = _db.remoteAssetEntity.id.count(distinct: true);
+    final query = _db.localAssetEntity.selectOnly()
+      ..addColumns([count])
+      ..join([_backedUpCopy(ownerId)])
+      ..where(_db.localAssetEntity.id.isNotInQuery(_iosSharedAlbumAssets()));
+    return query.map((row) => row.read(count)!).getSingle();
+  }
+
+  Join _backedUpCopy(String ownerId) => innerJoin(
+    _db.remoteAssetEntity,
+    _db.remoteAssetEntity.checksum.equalsExp(_db.localAssetEntity.checksum) &
+        _db.remoteAssetEntity.ownerId.equals(ownerId) &
+        _db.remoteAssetEntity.deletedAt.isNull() &
+        _db.remoteAssetEntity.libraryId.isNull() &
+        _db.remoteAssetEntity.visibility.isNotInValues(const [AssetVisibility.hidden, AssetVisibility.locked]),
+    useColumns: false,
+  );
+
+  BaseSelectStatement _iosSharedAlbumAssets() => _db.localAlbumAssetEntity.selectOnly()
+    ..addColumns([_db.localAlbumAssetEntity.assetId])
+    ..join([
+      innerJoin(
+        _db.localAlbumEntity,
+        _db.localAlbumAssetEntity.albumId.equalsExp(_db.localAlbumEntity.id),
+        useColumns: false,
+      ),
+    ])
+    ..where(_db.localAlbumEntity.isIosSharedAlbum.equals(true));
 
   /// The remote ids of the intents of [ownerId] that were queued before [settledBefore]
   Future<List<String>> getPending(String ownerId, {required DateTime settledBefore}) {

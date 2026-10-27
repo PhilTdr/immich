@@ -138,6 +138,45 @@ void main() {
     });
   });
 
+  group('countBackedUp', () {
+    test('counts the backed-up copies of all local assets as getBackedUp resolves them', () async {
+      final partner = await ctx.newUser();
+      await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1');
+      await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-2');
+      await ctx.newRemoteAsset(ownerId: partner.id, checksum: 'checksum-3');
+      await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-4', deletedAt: DateTime(2024));
+      await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-5', libraryId: 'library-1');
+      await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-6', visibility: AssetVisibility.hidden);
+      for (int i = 1; i <= 7; i++) {
+        await ctx.newLocalAsset(id: 'local-$i', checksum: 'checksum-$i');
+      }
+
+      expect(await sut.countBackedUp(userId), 2);
+    });
+
+    test('counts a backed-up copy once when several local assets share it', () async {
+      await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1');
+      await ctx.newLocalAsset(id: 'local-1', checksum: 'checksum-1');
+      await ctx.newLocalAsset(id: 'local-2', checksum: 'checksum-1');
+
+      expect(await sut.countBackedUp(userId), 1);
+    });
+
+    test('leaves out assets of iOS shared albums', () async {
+      final shared = await ctx.newLocalAlbum(isIosSharedAlbum: true);
+      final regular = await ctx.newLocalAlbum();
+      for (int i = 1; i <= 3; i++) {
+        await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-$i');
+        await ctx.newLocalAsset(id: 'local-$i', checksum: 'checksum-$i');
+      }
+      await ctx.newLocalAlbumAsset(albumId: shared.id, assetId: 'local-1');
+      await ctx.newLocalAlbumAsset(albumId: regular.id, assetId: 'local-2');
+      await ctx.newLocalAlbumAsset(albumId: regular.id, assetId: 'local-3');
+
+      expect(await sut.countBackedUp(userId), 2);
+    });
+  });
+
   group('getPending', () {
     test('returns the remote ids queued for the account', () async {
       await sut.upsert(userId, {'remote-1': 'checksum-1', 'remote-2': 'checksum-2'});

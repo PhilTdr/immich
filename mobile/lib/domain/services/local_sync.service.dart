@@ -23,7 +23,8 @@ import 'package:logging/logging.dart';
 
 const String _kSyncCancelledCode = "SYNC_CANCELLED";
 // A sync that finds almost every backed-up asset gone is treated as a device
-// state change (volume ejected, access revoked), not as deletions.
+// state change (volume ejected, access revoked, iCloud Photos removed from the
+// device), not as deletions.
 const int _kDeletionGuardMinAssets = 50;
 const double _kDeletionGuardMaxVanishedRatio = 0.9;
 
@@ -507,7 +508,7 @@ class LocalSyncService {
         return;
       }
 
-      if (result.total >= _kDeletionGuardMinAssets && gone.length > result.total * _kDeletionGuardMaxVanishedRatio) {
+      if (_isMassVanish(gone.length, result.total)) {
         _log.warning("Skipping deletion sync: ${gone.length} of ${result.total} backed-up assets vanished at once");
         return;
       }
@@ -518,8 +519,12 @@ class LocalSyncService {
     }
   }
 
-  /// Queues the backed-up assets among [deletedIds] for a server move-to-trash
-  /// and returns the app-initiated deletions that were skipped. Callers must
+  bool _isMassVanish(int vanished, int total) =>
+      total >= _kDeletionGuardMinAssets && vanished > total * _kDeletionGuardMaxVanishedRatio;
+
+  /// Queues the backed-up assets among [deletedIds] for a server move-to-trash,
+  /// unless almost every backed-up asset of the library is among them, and
+  /// returns the app-initiated deletions that were skipped. Callers must
   /// [LocalDeletionRepository.consumeExcluded] those once the local rows
   /// are gone.
   @visibleForTesting
@@ -537,11 +542,25 @@ class LocalSyncService {
       return excluded;
     }
 
+    final includeIosSharedAlbums = _syncLocalDeletionsInIosSharedAlbums;
     final backedUp = await _localDeletionRepository.getBackedUp(
       ownerId,
       ids,
-      includeIosSharedAlbums: _syncLocalDeletionsInIosSharedAlbums,
+      includeIosSharedAlbums: includeIosSharedAlbums,
     );
+    // Everyday deletions are too few to trip the guard, so they skip the counts
+    if (backedUp.length > _kDeletionGuardMinAssets * _kDeletionGuardMaxVanishedRatio) {
+      // Measured on the library alone, so the copies in iOS shared albums, which stay on the device or leave it with
+      // their album, do not water it down
+      final vanished = includeIosSharedAlbums
+          ? (await _localDeletionRepository.getBackedUp(ownerId, ids)).length
+          : backedUp.length;
+      final total = await _localDeletionRepository.countBackedUp(ownerId);
+      if (_isMassVanish(vanished, total)) {
+        _log.warning("Skipping deletion sync: $vanished of $total backed-up assets vanished at once");
+        return excluded;
+      }
+    }
     await _localDeletionRepository.upsert(ownerId, backedUp);
     return excluded;
   }

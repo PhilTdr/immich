@@ -278,6 +278,21 @@ void main() {
     });
   });
 
+  List<String> localIds(int count) => [for (int i = 0; i < count; i++) 'local-$i'];
+  Map<String, String> backedUp(int count) => {for (int i = 0; i < count; i++) 'remote-$i': 'checksum-$i'};
+
+  // [vanished] of the [total] backed-up library assets are among the deletions, plus [shared] backed-up copies in iOS
+  // shared albums, which only count when those are included
+  void stubBackedUp(int vanished, {required int total, int shared = 0}) {
+    when(
+      () => mockLocalDeletionRepository.getBackedUp(any(), any(), includeIosSharedAlbums: false),
+    ).thenAnswer((_) async => backedUp(vanished));
+    when(
+      () => mockLocalDeletionRepository.getBackedUp(any(), any(), includeIosSharedAlbums: true),
+    ).thenAnswer((_) async => backedUp(vanished + shared));
+    when(() => mockLocalDeletionRepository.countBackedUp(any())).thenAnswer((_) async => total);
+  }
+
   group('LocalSyncService - record locally deleted assets', () {
     test('queues backed-up deleted assets as pending deletions', () async {
       when(
@@ -327,6 +342,76 @@ void main() {
         ),
       );
       verifyNever(() => mockLocalDeletionRepository.upsert(any(), any()));
+    });
+
+    group('mass vanish guard', () {
+      test('skips queuing when almost every backed-up asset vanished at once', () async {
+        when(() => mockLocalDeletionRepository.getExcluded(any())).thenAnswer((_) async => {'local-excluded'});
+        stubBackedUp(91, total: 100);
+
+        final excluded = await sut.recordLocallyDeletedFromDelta([...localIds(91), 'local-excluded'], 'owner-1');
+
+        // The exclusions are still returned, as processDelta removes their rows anyway
+        expect(excluded, {'local-excluded'});
+        verify(() => mockLocalDeletionRepository.countBackedUp('owner-1')).called(1);
+        verifyNever(() => mockLocalDeletionRepository.upsert(any(), any()));
+      });
+
+      test('skips queuing when 46 of 50 backed-up assets vanished', () async {
+        stubBackedUp(46, total: 50);
+
+        await sut.recordLocallyDeletedFromDelta(localIds(46), 'owner-1');
+
+        verifyNever(() => mockLocalDeletionRepository.upsert(any(), any()));
+      });
+
+      test('queues the deletions when at most 90 percent of the backed-up assets vanished', () async {
+        stubBackedUp(90, total: 100);
+
+        // Deletions without a backed-up copy do not count
+        await sut.recordLocallyDeletedFromDelta(localIds(120), 'owner-1');
+
+        verify(() => mockLocalDeletionRepository.upsert('owner-1', backedUp(90))).called(1);
+      });
+
+      test('queues the deletions of a library under 50 backed-up assets that vanished as a whole', () async {
+        stubBackedUp(49, total: 49);
+
+        await sut.recordLocallyDeletedFromDelta(localIds(49), 'owner-1');
+
+        verify(() => mockLocalDeletionRepository.upsert('owner-1', backedUp(49))).called(1);
+      });
+
+      test('does not count the backed-up assets when too few vanished to trip the guard', () async {
+        stubBackedUp(45, total: 50);
+
+        await sut.recordLocallyDeletedFromDelta(localIds(100), 'owner-1');
+
+        verifyNever(() => mockLocalDeletionRepository.countBackedUp(any()));
+        verify(() => mockLocalDeletionRepository.upsert('owner-1', backedUp(45))).called(1);
+      });
+
+      test('measures the library alone when iOS shared albums are included', () async {
+        await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletionsInIosSharedAlbums, true);
+        // The shared album copies among the deletions do not count, only the library does
+        stubBackedUp(91, total: 100, shared: 200);
+
+        await sut.recordLocallyDeletedFromDelta(localIds(291), 'owner-1');
+
+        verify(
+          () => mockLocalDeletionRepository.getBackedUp('owner-1', localIds(291), includeIosSharedAlbums: false),
+        ).called(1);
+        verifyNever(() => mockLocalDeletionRepository.upsert(any(), any()));
+      });
+
+      test('queues the removals from iOS shared albums along with a library below the guard', () async {
+        await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletionsInIosSharedAlbums, true);
+        stubBackedUp(40, total: 100, shared: 60);
+
+        await sut.recordLocallyDeletedFromDelta(localIds(100), 'owner-1');
+
+        verify(() => mockLocalDeletionRepository.upsert('owner-1', backedUp(100))).called(1);
+      });
     });
   });
 
@@ -449,6 +534,34 @@ void main() {
       verify(
         () => mockLocalDeletionRepository.getBackedUp(UserStub.admin.id, ['local-1'], includeIosSharedAlbums: true),
       ).called(1);
+    });
+
+    test('removes the rows but queues nothing when almost every backed-up asset vanished at once', () async {
+      await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletions, true);
+      await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletionsInIosSharedAlbums, true);
+      // E.g. signed out of iCloud: the library leaves the device along with the shared albums
+      final deletes = [...localIds(100), 'shared-1', 'shared-2'];
+      stubDeltaSync(deletes);
+      // Stands in for the exclusion rows of the shared albums that left the device
+      when(() => mockLocalDeletionRepository.getExcluded(any())).thenAnswer((_) async => {'shared-1', 'shared-2'});
+      stubBackedUp(100, total: 100);
+
+      await sut.sync();
+
+      verify(
+        () => mockLocalDeletionRepository.getBackedUp(UserStub.admin.id, localIds(100), includeIosSharedAlbums: false),
+      ).called(1);
+      verify(() => mockLocalDeletionRepository.countBackedUp(UserStub.admin.id)).called(1);
+      verifyNever(() => mockLocalDeletionRepository.upsert(any(), any()));
+      verifyInOrder([
+        () => mockLocalAlbumRepository.processDelta(
+          updates: any(named: 'updates'),
+          deletes: deletes,
+          assetAlbums: any(named: 'assetAlbums'),
+        ),
+        () => mockLocalDeletionRepository.consumeExcluded({'shared-1', 'shared-2'}),
+        () => mockNativeSyncApi.checkpointSync(),
+      ]);
     });
 
     group('cloud albums', () {
