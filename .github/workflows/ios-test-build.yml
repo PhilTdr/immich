@@ -1,0 +1,116 @@
+name: iOS test build (unsigned)
+
+# Test branch only: builds an unsigned IPA for sideloading with a personal Apple ID
+
+on:
+  push:
+    branches: ['test/ios-shared-album-deletions']
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build-ios-unsigned:
+    name: Build unsigned iOS app
+    runs-on: macos-26
+    timeout-minutes: 120
+
+    steps:
+      - name: Select Xcode 26
+        run: sudo xcode-select -s /Applications/Xcode_26.2.app/Contents/Developer
+
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Restore Rust Cache
+        id: cache-rust-restore
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.rustup/toolchains
+            ~/.rustup/update-hashes
+            ~/.cargo/bin
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ios-test-rust-${{ runner.os }}-${{ hashFiles('native/crates/native_core_ffi/rust-toolchain.toml', 'native/Cargo.lock') }}
+
+      - name: Setup Mise
+        uses: immich-app/devtools/actions/use-mise@caac7f7e4298458a14238959504f411fc6cc7f06 # use-mise-action-v3.2.3
+        with:
+          github_token: ${{ github.token }}
+          working_directory: ./mobile
+
+      - name: Use a personal bundle id and enable file sharing
+        working-directory: ./mobile/ios
+        run: |
+          # Own ids, so the app installs next to the App Store version and a free Apple ID can sign it
+          cat > Signing.local.xcconfig <<'EOF'
+          IMMICH_BUNDLE_ID_PROD = dev.treder.immich.deletiontest
+          IMMICH_BUNDLE_ID_DEV = dev.treder.immich.deletiontest
+          IMMICH_GROUP_ID = group.dev.treder.immich.deletiontest
+          EOF
+          plist=Runner/Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Immich Test" "$plist"
+          # Makes the app's Documents folder (with the database) visible in Finder / Apple Devices
+          for key in UIFileSharingEnabled LSSupportsOpeningDocumentsInPlace; do
+            /usr/libexec/PlistBuddy -c "Delete :$key" "$plist" 2>/dev/null || true
+            /usr/libexec/PlistBuddy -c "Add :$key bool true" "$plist"
+          done
+
+      - name: Install dependencies
+        run: mise //mobile:install:ci 2>&1 | tee -a "$RUNNER_TEMP/build.log"
+
+      - name: Perform codegen
+        run: mise //mobile:codegen 2>&1 | tee -a "$RUNNER_TEMP/build.log"
+
+      - name: Build unsigned app
+        working-directory: ./mobile
+        run: mise exec -- flutter build ios --release --no-codesign 2>&1 | tee -a "$RUNNER_TEMP/build.log"
+
+      - name: Package IPA
+        working-directory: ./mobile
+        run: |
+          mkdir -p build/ipa/Payload
+          cp -R build/ios/iphoneos/Runner.app build/ipa/Payload/
+          cd build/ipa
+          zip -qry ../immich-test-${GITHUB_SHA::9}.ipa Payload
+          ls -la ..
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: immich-ios-test-ipa
+          path: mobile/build/immich-test-*.ipa
+          retention-days: 7
+
+      - name: Save Rust Cache
+        if: success()
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.rustup/toolchains
+            ~/.rustup/update-hashes
+            ~/.cargo/bin
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ steps.cache-rust-restore.outputs.cache-primary-key }}
+
+      - name: Report the end of the build log
+        if: failure()
+        run: |
+          log="$RUNNER_TEMP/build.log"
+          [ -f "$log" ] || exit 0
+          encode() { sed -e 's/%/%25/g' -e 's/\r/%0D/g' | awk '{printf "%s%%0A", $0}'; }
+          echo "::error title=Error lines::$(grep -iE 'error|failed|exception' "$log" | tail -n 40 | encode)"
+          echo "::error title=Log tail::$(tail -n 80 "$log" | encode)"
