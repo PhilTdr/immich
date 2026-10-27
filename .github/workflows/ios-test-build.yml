@@ -81,11 +81,16 @@ jobs:
       - name: Package IPA
         working-directory: ./mobile
         run: |
-          mkdir -p build/ipa/Payload
-          cp -R build/ios/iphoneos/Runner.app build/ipa/Payload/
-          cd build/ipa
-          zip -qry ../immich-test-${GITHUB_SHA::9}.ipa Payload
-          ls -la ..
+          {
+            # The Release product is named Immich.app
+            ls -la build/ios/iphoneos
+            app=$(ls -d build/ios/iphoneos/*.app | head -n 1)
+            echo "Packaging $app"
+            mkdir -p build/ipa/Payload
+            cp -R "$app" build/ipa/Payload/
+            (cd build/ipa && zip -qry ../immich-test-${GITHUB_SHA::9}.ipa Payload)
+            ls -la build/*.ipa
+          } 2>&1 | tee -a "$RUNNER_TEMP/build.log"
 
       - name: Upload IPA
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -112,5 +117,6 @@ jobs:
           log="$RUNNER_TEMP/build.log"
           [ -f "$log" ] || exit 0
           encode() { sed -e 's/%/%25/g' -e 's/\r/%0D/g' | awk '{printf "%s%%0A", $0}'; }
-          echo "::error title=Error lines::$(grep -iE 'error|failed|exception' "$log" | tail -n 40 | encode)"
-          echo "::error title=Log tail::$(tail -n 80 "$log" | encode)"
+          # Annotations are cut after a few KB, so keep them short
+          echo "::error title=Error lines::$(grep -iE 'error|failed|exception' "$log" | tail -n 15 | cut -c1-200 | encode)"
+          echo "::error title=Log tail::$(tail -n 25 "$log" | cut -c1-200 | encode)"
