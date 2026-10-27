@@ -97,12 +97,18 @@ class LocalSyncService {
       final snapshot = CurrentPlatform.isAndroid ? await _takeDeletionSnapshot() : null;
 
       final deviceAlbums = await _nativeSyncApi.getAlbums();
+
+      // Record deletion intents before processDelta removes the local rows, and before updateAll drops the vanished
+      // albums that are not selected for backup, whose links tell the assets of iOS shared albums apart.
+      final ownerId = CurrentPlatform.isIOS && delta.deletes.isNotEmpty ? await _deletionSyncOwner() : null;
+      if (ownerId != null) {
+        // The delta also reports the assets of a shared album that left the device
+        await _excludeVanishedIosSharedAlbums(deviceAlbums);
+      }
+      final excluded = ownerId != null ? await recordLocallyDeletedFromDelta(delta.deletes, ownerId) : const <String>{};
+
       await _localAlbumRepository.updateAll(deviceAlbums.toLocalAlbums());
       final newAssets = delta.updates.toLocalAssets();
-
-      // Record deletion intents before processDelta removes the local rows.
-      final ownerId = CurrentPlatform.isIOS && delta.deletes.isNotEmpty ? await _deletionSyncOwner() : null;
-      final excluded = ownerId != null ? await recordLocallyDeletedFromDelta(delta.deletes, ownerId) : const <String>{};
 
       await _localAlbumRepository.processDelta(
         updates: newAssets,
@@ -462,6 +468,23 @@ class LocalSyncService {
       return;
     }
     await _localDeletionRepository.markExcluded(await _localAlbumRepository.getAssetIds(album.id));
+  }
+
+  /// Like [_excludeWholeIosSharedAlbum] for the stored shared albums that [deviceAlbums] no longer lists or lists
+  /// empty, once the caller resolved the deletion sync owner
+  Future<void> _excludeVanishedIosSharedAlbums(List<PlatformAlbum> deviceAlbums) async {
+    if (!_syncLocalDeletionsInIosSharedAlbums) {
+      return;
+    }
+    final remaining = {
+      for (final album in deviceAlbums)
+        if (album.assetCount > 0) album.id,
+    };
+    for (final album in await _localAlbumRepository.getAll()) {
+      if (album.isIosSharedAlbum && !remaining.contains(album.id)) {
+        await _localDeletionRepository.markExcluded(await _localAlbumRepository.getAssetIds(album.id));
+      }
+    }
   }
 
   /// Detects deletions from the pre-reconciliation snapshot, re-verifying each
