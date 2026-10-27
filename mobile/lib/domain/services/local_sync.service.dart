@@ -265,8 +265,9 @@ class LocalSyncService {
 
       _log.fine("Device album ${dbAlbum.name} has changed. Syncing...");
 
-      // Faster path - only new assets added
-      if (await checkAddition(dbAlbum, deviceAlbum)) {
+      // Faster path - only new assets added. Not for iOS shared albums, whose dates cannot tell additions apart from
+      // removals reliably
+      if (!dbAlbum.isIosSharedAlbum && await checkAddition(dbAlbum, deviceAlbum)) {
         _log.fine("Fast synced device album ${dbAlbum.name}");
         return true;
       }

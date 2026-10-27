@@ -582,6 +582,22 @@ void main() {
         verifyNever(() => mockLocalDeletionRepository.getSnapshotDeletionCandidates(any()));
       });
 
+      test('diffs a changed shared album in full instead of only adding its newer assets', () async {
+        stubCloudAlbumSync(deviceAssetCount: 3);
+        when(() => mockNativeSyncApi.getAssetsCountSince(any(), any())).thenAnswer((_) async => 1);
+
+        await sut.sync();
+
+        verifyNever(() => mockNativeSyncApi.getAssetsCountSince(any(), any()));
+        verify(
+          () => mockLocalAlbumRepository.upsert(
+            any(),
+            toUpsert: any(named: 'toUpsert'),
+            toDelete: ['local-1'],
+          ),
+        ).called(1);
+      });
+
       test('excludes the assets of a shared album that vanished after it was counted', () async {
         await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletions, true);
         await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletionsInIosSharedAlbums, true);

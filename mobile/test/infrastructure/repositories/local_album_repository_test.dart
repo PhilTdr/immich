@@ -56,6 +56,26 @@ void main() {
     });
   });
 
+  group('updateAll', () {
+    test('keeps the stored time of iOS shared albums, as their assets are synced afterwards', () async {
+      final localAlbumRepo = mediumFactory.getRepository<LocalAlbumRepository>();
+      final stored = DateTime.utc(2025);
+      final onDevice = DateTime.utc(2026);
+      await localAlbumRepo.upsert(mediumFactory.localAlbum(id: 'shared', updatedAt: stored, isIosSharedAlbum: true));
+      await localAlbumRepo.upsert(mediumFactory.localAlbum(id: 'library', updatedAt: stored));
+
+      await localAlbumRepo.updateAll([
+        mediumFactory.localAlbum(id: 'shared', name: 'Shared', updatedAt: onDevice, isIosSharedAlbum: true),
+        mediumFactory.localAlbum(id: 'library', name: 'Library', updatedAt: onDevice),
+      ]);
+
+      final albums = {for (final album in await localAlbumRepo.getAll()) album.id: album};
+      expect(albums['shared']!.name, 'Shared');
+      expect(albums['shared']!.updatedAt.isAtSameMomentAs(stored), isTrue);
+      expect(albums['library']!.updatedAt.isAtSameMomentAs(onDevice), isTrue);
+    });
+  });
+
   group('processDelta', () {
     // Regression for #22844: an asset moved (not copied) into a backup album on
     // Android was dropped. The delta reports only the asset's new album, and the
