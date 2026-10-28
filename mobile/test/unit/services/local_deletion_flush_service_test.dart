@@ -230,6 +230,24 @@ void main() {
 
         verify(() => services.asset.service.trash(any())).called(1);
       });
+
+      test('stops between chunks when the iOS shared album option is turned off', () async {
+        await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletionsInIosSharedAlbums, true);
+        final pending = [for (int i = 0; i < 1001; i++) 'remote-$i'];
+        when(
+          () => mocks.localDeletion.repo.getPending(any(), settledBefore: any(named: 'settledBefore')),
+        ).thenAnswer((_) async => pending);
+        when(() => services.asset.service.trash(any())).thenAnswer((_) async {
+          // On the settings page in the main isolate, which the cached settings of the flush do not see
+          await (db.delete(
+            db.settingsEntity,
+          )..where((row) => row.key.equals(SettingsKey.backupSyncLocalDeletionsInIosSharedAlbums.name))).go();
+        });
+
+        await sut.flushPendingDeletions('owner-1');
+
+        verify(() => services.asset.service.trash(any())).called(1);
+      });
     });
 
     group('moves out of backup', () {

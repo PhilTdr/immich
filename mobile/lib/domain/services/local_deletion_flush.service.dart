@@ -44,9 +44,15 @@ class LocalDeletionFlushService {
   bool get _syncLocalMovesOutOfBackupAsDeletion =>
       SettingsRepository.instance.appConfig.backup.syncLocalMovesOutOfBackupAsDeletion;
 
+  bool get _syncLocalDeletionsInIosSharedAlbums =>
+      SettingsRepository.instance.appConfig.backup.syncLocalDeletionsInIosSharedAlbums;
+
+  /// Turning the setting off clears the queue and turning the iOS shared album option off drops the pending
+  /// deletions, so a running flush stops at either
   Future<bool> _stillEnabled() async {
+    final includedIosSharedAlbums = _syncLocalDeletionsInIosSharedAlbums;
     await SettingsRepository.instance.refresh();
-    return _syncLocalDeletionsEnabled;
+    return _syncLocalDeletionsEnabled && (_syncLocalDeletionsInIosSharedAlbums || !includedIosSharedAlbums);
   }
 
   String? get _currentUserId => Store.tryGet(StoreKey.currentUser)?.id;
