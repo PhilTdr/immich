@@ -367,7 +367,9 @@ void main() {
       final result = await sut.getSnapshotDeletionCandidates(snapshotId);
 
       expect(result.total, 1);
-      expect(result.candidates, [(localId: local.id, remoteId: remote.id, checksum: 'checksum-1')]);
+      expect(result.candidates, [
+        (localId: local.id, remoteId: remote.id, checksum: 'checksum-1', inIosSharedAlbum: false),
+      ]);
     });
 
     test('returns candidates for assets the Android album reconciliation removed', () async {
@@ -481,6 +483,27 @@ void main() {
       expect(result.candidates.map((c) => c.remoteId), [remote.id]);
     });
 
+    test('flags the assets of iOS shared albums and leaves them out of the total', () async {
+      final shared = await ctx.newLocalAlbum(isIosSharedAlbum: true);
+      final regular = await ctx.newLocalAlbum();
+      for (final (id, albumId) in [('local-shared', shared.id), ('local-regular', regular.id)]) {
+        await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-$id');
+        await ctx.newLocalAsset(id: id, checksum: 'checksum-$id');
+        await ctx.newLocalAlbumAsset(albumId: albumId, assetId: id);
+      }
+
+      final snapshotId = await sut.snapshotBackedUpAssets(userId, includeIosSharedAlbums: true);
+      // Removing the rows also removes their album links
+      await ctx.db.managers.localAssetEntity.filter((r) => r.id.isIn(['local-shared', 'local-regular'])).delete();
+      final result = await sut.getSnapshotDeletionCandidates(snapshotId);
+
+      expect(result.total, 1);
+      expect(
+        {for (final c in result.candidates) c.localId: c.inIosSharedAlbum},
+        {'local-shared': true, 'local-regular': false},
+      );
+    });
+
     test('detection without a prior snapshot returns nothing', () async {
       await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1');
 
@@ -503,7 +526,9 @@ void main() {
       final result = await sut.getSnapshotDeletionCandidates(first);
 
       expect(result.total, 2);
-      expect(result.candidates, [(localId: local.id, remoteId: remote.id, checksum: 'checksum-1')]);
+      expect(result.candidates, [
+        (localId: local.id, remoteId: remote.id, checksum: 'checksum-1', inIosSharedAlbum: false),
+      ]);
     });
 
     test('keeps exclusions that another snapshot still needs', () async {

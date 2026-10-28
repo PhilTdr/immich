@@ -10,8 +10,14 @@ import 'package:immich_mobile/infrastructure/repositories/local_deletion.reposit
 
 const Duration _kStaleSnapshotAge = Duration(hours: 1);
 const _kNotInAnySnapshot = CustomExpression<bool>('local_id NOT IN (SELECT local_id FROM local_deletion_snapshot)');
+const _kIosSharedAlbumAssetIds = '''
+  SELECT laa.asset_id FROM local_album_asset_entity laa
+  INNER JOIN local_album_entity al ON al.id = laa.album_id
+  WHERE al.is_ios_shared_album = 1
+''';
 
 typedef PendingDeletion = ({String remoteId, String? name, String? thumbHash, DateTime createdAt});
+typedef SnapshotCandidate = ({String localId, String remoteId, String checksum, bool inIosSharedAlbum});
 
 @DriftAccessor()
 class LocalDeletionRepository extends DatabaseAccessor<Drift> with $LocalDeletionRepositoryMixin {
@@ -367,17 +373,13 @@ class LocalDeletionRepository extends DatabaseAccessor<Drift> with $LocalDeletio
       final snapshotId = max(now, last.read<int>('id') + 1);
       await _db.customStatement(
         '''
-        INSERT INTO local_deletion_snapshot (snapshot_id, local_id, remote_id, checksum)
-        SELECT ?, la.id, ra.id, la.checksum
+        INSERT INTO local_deletion_snapshot (snapshot_id, local_id, remote_id, checksum, in_ios_shared_album)
+        SELECT ?, la.id, ra.id, la.checksum, la.id IN ($_kIosSharedAlbumAssetIds)
         FROM local_asset_entity la
         INNER JOIN remote_asset_entity ra ON ra.checksum = la.checksum
         WHERE ra.owner_id = ? AND ra.deleted_at IS NULL AND ra.library_id IS NULL
           AND ra.visibility NOT IN (?, ?)
-          AND (? OR la.id NOT IN (
-            SELECT laa.asset_id FROM local_album_asset_entity laa
-            INNER JOIN local_album_entity al ON al.id = laa.album_id
-            WHERE al.is_ios_shared_album = 1
-          ))
+          AND (? OR la.id NOT IN ($_kIosSharedAlbumAssetIds))
       ''',
         [
           snapshotId,
@@ -391,16 +393,16 @@ class LocalDeletionRepository extends DatabaseAccessor<Drift> with $LocalDeletio
     });
   }
 
-  /// The rows of [snapshotId] whose local asset is gone and that are not excluded, with the snapshot size so the
-  /// caller can tell a whole volume disappearing apart from deletions
-  Future<({List<({String localId, String remoteId, String checksum})> candidates, int total})>
-  getSnapshotDeletionCandidates(int snapshotId) {
+  /// The rows of [snapshotId] whose local asset is gone and that are not excluded, with the number of rows outside iOS
+  /// shared albums so the caller can tell the library or a whole volume disappearing apart from deletions
+  Future<({List<SnapshotCandidate> candidates, int total})> getSnapshotDeletionCandidates(int snapshotId) {
     return _db.transaction(() async {
       await _createSnapshotTable();
       final rows = await _db
           .customSelect(
             '''
-        SELECT s.local_id AS local_id, s.remote_id AS remote_id, s.checksum AS checksum
+        SELECT s.local_id AS local_id, s.remote_id AS remote_id, s.checksum AS checksum,
+          s.in_ios_shared_album AS in_ios_shared_album
         FROM local_deletion_snapshot s
         WHERE s.snapshot_id = ?
           AND NOT EXISTS (SELECT 1 FROM local_asset_entity la WHERE la.id = s.local_id)
@@ -411,7 +413,7 @@ class LocalDeletionRepository extends DatabaseAccessor<Drift> with $LocalDeletio
           .get();
       final total = await _db
           .customSelect(
-            'SELECT COUNT(*) AS c FROM local_deletion_snapshot WHERE snapshot_id = ?',
+            'SELECT COUNT(*) AS c FROM local_deletion_snapshot WHERE snapshot_id = ? AND in_ios_shared_album = 0',
             variables: [Variable.withInt(snapshotId)],
           )
           .getSingle();
@@ -421,6 +423,7 @@ class LocalDeletionRepository extends DatabaseAccessor<Drift> with $LocalDeletio
               localId: r.read<String>('local_id'),
               remoteId: r.read<String>('remote_id'),
               checksum: r.read<String>('checksum'),
+              inIosSharedAlbum: r.read<bool>('in_ios_shared_album'),
             ),
           )
           .toList();
@@ -446,7 +449,8 @@ class LocalDeletionRepository extends DatabaseAccessor<Drift> with $LocalDeletio
   Future<void> _createSnapshotTable() {
     return _db.customStatement(
       'CREATE TEMP TABLE IF NOT EXISTS local_deletion_snapshot (snapshot_id INTEGER NOT NULL, '
-      'local_id TEXT NOT NULL, remote_id TEXT NOT NULL, checksum TEXT NOT NULL, PRIMARY KEY (snapshot_id, local_id))',
+      'local_id TEXT NOT NULL, remote_id TEXT NOT NULL, checksum TEXT NOT NULL, in_ios_shared_album INTEGER NOT NULL, '
+      'PRIMARY KEY (snapshot_id, local_id))',
     );
   }
 

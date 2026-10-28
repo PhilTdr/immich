@@ -22,9 +22,9 @@ import 'package:immich_mobile/utils/diff.dart';
 import 'package:logging/logging.dart';
 
 const String _kSyncCancelledCode = "SYNC_CANCELLED";
-// A sync that finds almost every backed-up asset gone is treated as a device
-// state change (volume ejected, access revoked, iCloud Photos removed from the
-// device), not as deletions.
+// A sync that finds almost every backed-up library asset gone is treated as a
+// device state change (volume ejected, access revoked, iCloud Photos removed
+// from the device), not as deletions.
 const int _kDeletionGuardMinAssets = 50;
 const double _kDeletionGuardMaxVanishedRatio = 0.9;
 
@@ -508,8 +508,9 @@ class LocalSyncService {
         return;
       }
 
-      if (_isMassVanish(gone.length, result.total)) {
-        _log.warning("Skipping deletion sync: ${gone.length} of ${result.total} backed-up assets vanished at once");
+      final vanished = gone.where((c) => !c.inIosSharedAlbum).length;
+      if (_isMassVanish(vanished, result.total)) {
+        _log.warning("Skipping deletion sync: $vanished of ${result.total} backed-up assets vanished at once");
         return;
       }
 
@@ -519,6 +520,8 @@ class LocalSyncService {
     }
   }
 
+  /// Both counts leave out the copies in iOS shared albums, which stay on the device or leave it with their album, so
+  /// they do not water down the share of the library that vanished
   bool _isMassVanish(int vanished, int total) =>
       total >= _kDeletionGuardMinAssets && vanished > total * _kDeletionGuardMaxVanishedRatio;
 
@@ -550,8 +553,7 @@ class LocalSyncService {
     );
     // Everyday deletions are too few to trip the guard, so they skip the counts
     if (backedUp.length > _kDeletionGuardMinAssets * _kDeletionGuardMaxVanishedRatio) {
-      // Measured on the library alone, so the copies in iOS shared albums, which stay on the device or leave it with
-      // their album, do not water it down
+      // Without the copies in iOS shared albums, see [_isMassVanish]
       final vanished = includeIosSharedAlbums
           ? (await _localDeletionRepository.getBackedUp(ownerId, ids)).length
           : backedUp.length;

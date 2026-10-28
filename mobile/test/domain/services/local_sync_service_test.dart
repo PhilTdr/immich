@@ -15,6 +15,7 @@ import 'package:immich_mobile/domain/services/local_sync.service.dart';
 import 'package:immich_mobile/domain/services/store.service.dart';
 import 'package:immich_mobile/entities/store.entity.dart';
 import 'package:immich_mobile/infrastructure/repositories/local_album.repository.dart';
+import 'package:immich_mobile/infrastructure/repositories/local_deletion.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/settings.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/store.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/trashed_local_asset.repository.dart';
@@ -102,7 +103,7 @@ void main() {
     ).thenAnswer((_) async => 1);
     when(
       () => mockLocalDeletionRepository.getSnapshotDeletionCandidates(any()),
-    ).thenAnswer((_) async => (candidates: <({String localId, String remoteId, String checksum})>[], total: 0));
+    ).thenAnswer((_) async => (candidates: <SnapshotCandidate>[], total: 0));
     when(() => mockLocalDeletionRepository.clearSnapshotAndConsumeExclusions(any())).thenAnswer((_) async {});
     when(() => mockNativeSyncApi.getExistingAssetIds(any())).thenAnswer((_) async => <String>[]);
     when(
@@ -615,8 +616,12 @@ void main() {
           ),
         ).thenAnswer((_) async {});
         when(() => mockLocalDeletionRepository.markExcluded(any())).thenAnswer((_) async {});
+        // A shared album copy, which the library total leaves out
         when(() => mockLocalDeletionRepository.getSnapshotDeletionCandidates(any())).thenAnswer(
-          (_) async => (candidates: [(localId: 'local-1', remoteId: 'remote-1', checksum: 'checksum-1')], total: 2),
+          (_) async => (
+            candidates: [(localId: 'local-1', remoteId: 'remote-1', checksum: 'checksum-1', inIosSharedAlbum: true)],
+            total: 0,
+          ),
         );
       }
 
@@ -896,7 +901,10 @@ void main() {
 
     void stubCandidates() {
       when(() => mockLocalDeletionRepository.getSnapshotDeletionCandidates(any())).thenAnswer(
-        (_) async => (candidates: [(localId: 'local-1', remoteId: 'remote-1', checksum: 'checksum-1')], total: 1),
+        (_) async => (
+          candidates: [(localId: 'local-1', remoteId: 'remote-1', checksum: 'checksum-1', inIosSharedAlbum: false)],
+          total: 1,
+        ),
       );
     }
 
@@ -1013,7 +1021,10 @@ void main() {
 
       stubFullSync();
       when(() => mockLocalDeletionRepository.getSnapshotDeletionCandidates(any())).thenAnswer(
-        (_) async => (candidates: [(localId: 'local-1', remoteId: 'remote-1', checksum: 'checksum-1')], total: 1),
+        (_) async => (
+          candidates: [(localId: 'local-1', remoteId: 'remote-1', checksum: 'checksum-1', inIosSharedAlbum: false)],
+          total: 1,
+        ),
       );
 
       await sut.fullSync();
@@ -1147,7 +1158,10 @@ void main() {
 
       stubFullSync();
       when(() => mockLocalDeletionRepository.getSnapshotDeletionCandidates(any())).thenAnswer(
-        (_) async => (candidates: [(localId: 'local-1', remoteId: 'remote-1', checksum: 'checksum-1')], total: 1),
+        (_) async => (
+          candidates: [(localId: 'local-1', remoteId: 'remote-1', checksum: 'checksum-1', inIosSharedAlbum: false)],
+          total: 1,
+        ),
       );
 
       await cancelledSut.fullSync();
@@ -1167,8 +1181,8 @@ void main() {
       when(() => mockLocalDeletionRepository.getSnapshotDeletionCandidates(any())).thenAnswer(
         (_) async => (
           candidates: [
-            (localId: 'hidden-1', remoteId: 'remote-1', checksum: 'checksum-1'),
-            (localId: 'gone-2', remoteId: 'remote-2', checksum: 'checksum-2'),
+            (localId: 'hidden-1', remoteId: 'remote-1', checksum: 'checksum-1', inIosSharedAlbum: false),
+            (localId: 'gone-2', remoteId: 'remote-2', checksum: 'checksum-2', inIosSharedAlbum: false),
           ],
           total: 2,
         ),
@@ -1187,7 +1201,8 @@ void main() {
 
       stubFullSync();
       final candidates = [
-        for (int i = 0; i < 100; i++) (localId: 'local-$i', remoteId: 'remote-$i', checksum: 'checksum-$i'),
+        for (int i = 0; i < 100; i++)
+          (localId: 'local-$i', remoteId: 'remote-$i', checksum: 'checksum-$i', inIosSharedAlbum: false),
       ];
       when(
         () => mockLocalDeletionRepository.getSnapshotDeletionCandidates(any()),
@@ -1199,6 +1214,40 @@ void main() {
       // queued, but the snapshot is still cleared for the next run.
       verifyNever(() => mockLocalDeletionRepository.upsert(any(), any()));
       verify(() => mockLocalDeletionRepository.clearSnapshotAndConsumeExclusions(any())).called(1);
+    });
+
+    group('with the copies in iOS shared albums', () {
+      List<SnapshotCandidate> candidates({required int library, required int shared}) => [
+        for (int i = 0; i < library + shared; i++)
+          (localId: 'local-$i', remoteId: 'remote-$i', checksum: 'checksum-$i', inIosSharedAlbum: i >= library),
+      ];
+
+      setUp(() async {
+        await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletions, true);
+        await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletionsInIosSharedAlbums, true);
+        stubFullSync();
+      });
+
+      test('skips the deletion sync when almost every backed-up library asset vanished at once', () async {
+        // The total counts the library alone
+        when(
+          () => mockLocalDeletionRepository.getSnapshotDeletionCandidates(any()),
+        ).thenAnswer((_) async => (candidates: candidates(library: 91, shared: 200), total: 100));
+
+        await sut.fullSync();
+
+        verifyNever(() => mockLocalDeletionRepository.upsert(any(), any()));
+      });
+
+      test('queues the removals from iOS shared albums along with a library below the guard', () async {
+        when(
+          () => mockLocalDeletionRepository.getSnapshotDeletionCandidates(any()),
+        ).thenAnswer((_) async => (candidates: candidates(library: 40, shared: 60), total: 100));
+
+        await sut.fullSync();
+
+        verify(() => mockLocalDeletionRepository.upsert(UserStub.admin.id, backedUp(100))).called(1);
+      });
     });
   });
 
