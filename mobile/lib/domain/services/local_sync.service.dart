@@ -449,6 +449,13 @@ class LocalSyncService {
     return _currentUserId;
   }
 
+  /// Turning the setting off clears the queue, which a running sync must not fill again. The sync runs in another
+  /// isolate, whose cached settings miss the change, so they are read again right before queueing
+  Future<bool> _stillEnabled() async {
+    await SettingsRepository.instance.refresh();
+    return _syncLocalDeletionsEnabled;
+  }
+
   Future<_DeletionSnapshot?> _takeDeletionSnapshot() async {
     final ownerId = await _deletionSyncOwner();
     if (ownerId == null) {
@@ -514,7 +521,15 @@ class LocalSyncService {
         return;
       }
 
-      await _localDeletionRepository.upsert(snapshot.ownerId, {for (final c in gone) c.remoteId: c.checksum});
+      if (!await _stillEnabled()) {
+        return;
+      }
+      // Turning the shared album option off drops the pending deletions, so the copies in shared albums are left out
+      final includeIosSharedAlbums = _syncLocalDeletionsInIosSharedAlbums;
+      await _localDeletionRepository.upsert(snapshot.ownerId, {
+        for (final c in gone)
+          if (includeIosSharedAlbums || !c.inIosSharedAlbum) c.remoteId: c.checksum,
+      });
     } finally {
       await _localDeletionRepository.clearSnapshotAndConsumeExclusions(snapshot.id);
     }
@@ -526,8 +541,9 @@ class LocalSyncService {
       total >= _kDeletionGuardMinAssets && vanished > total * _kDeletionGuardMaxVanishedRatio;
 
   /// Queues the backed-up assets among [deletedIds] for a server move-to-trash,
-  /// unless almost every backed-up asset of the library is among them, and
-  /// returns the app-initiated deletions that were skipped. Callers must
+  /// unless the setting was turned off meanwhile or almost every backed-up
+  /// asset of the library is among them, and returns the app-initiated
+  /// deletions that were skipped. Callers must
   /// [LocalDeletionRepository.consumeExcluded] those once the local rows
   /// are gone.
   @visibleForTesting
@@ -545,8 +561,9 @@ class LocalSyncService {
       return excluded;
     }
 
+    // The cached option, which also decided whether the shared albums that left the device were excluded
     final includeIosSharedAlbums = _syncLocalDeletionsInIosSharedAlbums;
-    final backedUp = await _localDeletionRepository.getBackedUp(
+    var backedUp = await _localDeletionRepository.getBackedUp(
       ownerId,
       ids,
       includeIosSharedAlbums: includeIosSharedAlbums,
@@ -562,6 +579,13 @@ class LocalSyncService {
         _log.warning("Skipping deletion sync: $vanished of $total backed-up assets vanished at once");
         return excluded;
       }
+    }
+    if (!await _stillEnabled()) {
+      return excluded;
+    }
+    // Turning the shared album option off drops the pending deletions, so the copies in shared albums are left out
+    if (includeIosSharedAlbums && !_syncLocalDeletionsInIosSharedAlbums) {
+      backedUp = await _localDeletionRepository.getBackedUp(ownerId, ids);
     }
     await _localDeletionRepository.upsert(ownerId, backedUp);
     return excluded;

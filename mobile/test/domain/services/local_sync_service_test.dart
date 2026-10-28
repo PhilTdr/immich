@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:immich_mobile/constants/enums.dart';
 import 'package:immich_mobile/data/db/main/database.dart';
+import 'package:immich_mobile/data/db/main/table/app/settings.drift.dart';
 import 'package:immich_mobile/domain/models/album/local_album.model.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/domain/models/settings_key.dart';
@@ -294,7 +295,27 @@ void main() {
     when(() => mockLocalDeletionRepository.countBackedUp(any())).thenAnswer((_) async => total);
   }
 
+  // The settings page runs in the main isolate, the sync in a worker isolate whose cached settings do not see the change
+  Future<void> changeOnSettingsPage(SettingsKey<bool> key, {required bool enabled}) async {
+    await (db.delete(db.settingsEntity)..where((row) => row.key.equals(key.name))).go();
+    if (enabled) {
+      await db
+          .into(db.settingsEntity)
+          .insert(
+            SettingsEntityCompanion.insert(
+              key: key.name,
+              value: drift.Value(key.encode(true)),
+              updatedAt: drift.Value(DateTime.now()),
+            ),
+          );
+    }
+  }
+
   group('LocalSyncService - record locally deleted assets', () {
+    setUp(() async {
+      await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletions, true);
+    });
+
     test('queues backed-up deleted assets as pending deletions', () async {
       when(
         () => mockLocalDeletionRepository.getBackedUp(
@@ -343,6 +364,46 @@ void main() {
         ),
       );
       verifyNever(() => mockLocalDeletionRepository.upsert(any(), any()));
+    });
+
+    test('queues nothing when the setting was turned off during the sync', () async {
+      when(() => mockLocalDeletionRepository.getExcluded(any())).thenAnswer((_) async => {'local-excluded'});
+      when(
+        () => mockLocalDeletionRepository.getBackedUp(
+          any(),
+          any(),
+          includeIosSharedAlbums: any(named: 'includeIosSharedAlbums'),
+        ),
+      ).thenAnswer((_) async {
+        await changeOnSettingsPage(SettingsKey.backupSyncLocalDeletions, enabled: false);
+        return {'r-1': 'c-1'};
+      });
+
+      final excluded = await sut.recordLocallyDeletedFromDelta(['local-excluded', 'local-1'], 'owner-1');
+
+      expect(excluded, {'local-excluded'});
+      verifyNever(() => mockLocalDeletionRepository.upsert(any(), any()));
+    });
+
+    test('leaves out iOS shared albums when their option was turned off during the sync', () async {
+      await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletionsInIosSharedAlbums, true);
+      stubBackedUp(1, total: 100, shared: 2);
+      await changeOnSettingsPage(SettingsKey.backupSyncLocalDeletionsInIosSharedAlbums, enabled: false);
+
+      await sut.recordLocallyDeletedFromDelta(localIds(3), 'owner-1');
+
+      verify(() => mockLocalDeletionRepository.upsert('owner-1', backedUp(1))).called(1);
+    });
+
+    test('does not add iOS shared albums when their option was turned on during the sync', () async {
+      stubBackedUp(1, total: 100, shared: 2);
+      // Too late for the shared albums that left the device to be excluded
+      await changeOnSettingsPage(SettingsKey.backupSyncLocalDeletionsInIosSharedAlbums, enabled: true);
+
+      await sut.recordLocallyDeletedFromDelta(localIds(3), 'owner-1');
+
+      verifyNever(() => mockLocalDeletionRepository.getBackedUp(any(), any(), includeIosSharedAlbums: true));
+      verify(() => mockLocalDeletionRepository.upsert('owner-1', backedUp(1))).called(1);
     });
 
     group('mass vanish guard', () {
@@ -648,6 +709,21 @@ void main() {
         verifyNever(() => mockLocalDeletionRepository.markExcluded(any()));
       });
 
+      test('does not queue the removals when the option was turned off during the sync', () async {
+        await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletions, true);
+        await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletionsInIosSharedAlbums, true);
+        stubCloudAlbumSync();
+        when(() => mockNativeSyncApi.getExistingAssetIds(any())).thenAnswer((_) async {
+          await changeOnSettingsPage(SettingsKey.backupSyncLocalDeletionsInIosSharedAlbums, enabled: false);
+          return <String>[];
+        });
+
+        await sut.sync();
+
+        verifyNever(() => mockLocalDeletionRepository.upsert(any(), any(that: isNotEmpty)));
+        verify(() => mockLocalDeletionRepository.clearSnapshotAndConsumeExclusions(1)).called(1);
+      });
+
       test('excludes the assets of a shared album that empties as a whole', () async {
         await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletions, true);
         await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletionsInIosSharedAlbums, true);
@@ -931,6 +1007,21 @@ void main() {
         () => mockLocalDeletionRepository.clearSnapshotAndConsumeExclusions(1),
         () => mockNativeSyncApi.checkpointSync(),
       ]);
+    });
+
+    test('does not queue the deletions when the setting was turned off during the sync', () async {
+      await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletions, true);
+      stubDeltaSync(const [], albums: [album]);
+      stubCandidates();
+      when(() => mockNativeSyncApi.getExistingAssetIds(any())).thenAnswer((_) async {
+        await changeOnSettingsPage(SettingsKey.backupSyncLocalDeletions, enabled: false);
+        return <String>[];
+      });
+
+      await sut.sync();
+
+      verifyNever(() => mockLocalDeletionRepository.upsert(any(), any()));
+      verify(() => mockLocalDeletionRepository.clearSnapshotAndConsumeExclusions(1)).called(1);
     });
 
     test('re-verifies the reported deletes instead of queuing them directly', () async {
