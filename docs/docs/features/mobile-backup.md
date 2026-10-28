@@ -54,6 +54,22 @@ When enabled, Immich automatically creates albums on the server that mirror the 
 
 This is a one-way sync from your device to the server. You can enable this feature at any time and use the **Reorganize into album** button to backfill existing uploads into their corresponding albums.
 
+### Sync deleted photos and videos
+
+When **Deleted on device** is enabled in the backup settings, photos and videos that you delete in another app, such as the gallery, the iOS Photos app or a file manager, are also moved to the trash on the server. They are deleted permanently once the server empties its trash (after 30 days by default). The option is off by default and requires full access to the photo library.
+
+- The app notices deletions when it syncs (when you open or resume the app, or in the background) and moves them to the server trash at the first sync that runs at least 15 minutes later. Until then, the **Deletions** card on the backup page lists them, and turning the option off cancels them. They also stay pending while the trash is disabled on the server.
+- Only deletions made while the option is on are synced, and only for photos and videos in your own account. Photos and videos removed by Immich itself, for example with [Free Up Space](/features/mobile-app#free-up-space), are not moved to the server trash.
+- If almost all backed-up photos disappear from the device at once, for example after you turn off iCloud Photos, these deletions are not synced. If fewer disappear, they are moved to the server trash, so turn this option off before you turn off iCloud Photos, sign out of iCloud or remove many photos from the device in another way.
+- If you restore a deleted photo on the device while its server copy is still in the trash, the server copy is restored as well, as long as the option is still on and this device synced the deletion.
+- On Android, moving a photo to another folder that is not backed up does not count as deleting it. Moving it somewhere other apps can't see, for example a folder with a `.nomedia` file or a locked folder of another app, does count. Turn on **Moved out of backup** to also sync moves that copy the photo to a new file, for example to the SD card, as deletions. Removing an SD card or USB drive does not count as deleting the photos on it.
+- On iOS, deletions in iCloud shared albums are not synced, because photos there also disappear when another member removes them. Turn on **Deleted in iCloud shared albums** to sync them anyway, except for whole shared albums that disappear from the device. Turning that option off clears all pending deletions.
+- If you use Immich on several devices, deleting a photo on one of them moves the server copy to the trash even if another device still has it. Other Android devices that have **Sync remote deletions** turned on in the advanced settings then also move their copy to the device trash.
+
+:::warning Hidden photos on iOS
+iOS locks the Hidden album by default, and while it is locked, apps can't see hidden photos. A backed-up photo that you hide therefore counts as deleted the next time the app starts and is moved to the server trash. To keep the server copy, restore it from the server trash before the trash is emptied.
+:::
+
 ## Platform Specific Features
 
 ### Android
