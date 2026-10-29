@@ -523,4 +523,9 @@ class NativeSyncApiImpl: ImmichPlugin, NativeSyncApi, FlutterPlugin {
     // Only used by the Android move check: iOS albums reference assets, nothing is moved out of a backed-up album
     return [:]
   }
+
+  func getMissingAssetIds(assets: [PlatformAssetFile]) throws -> [String] {
+    // Only used on Android: the iOS library has no folders or volumes that can be ejected
+    return assets.map { $0.id }
+  }
 }

@@ -7,7 +7,9 @@ import android.content.Context
 import android.database.Cursor
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.ext.SdkExtensions
+import android.os.storage.StorageManager
 import android.provider.MediaStore
 import android.util.Base64
 import android.util.Log
@@ -29,6 +31,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.serialization.json.Json
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
@@ -50,13 +53,18 @@ open class NativeSyncApiImplBase(context: Context) : ImmichPlugin(), ActivityAwa
   private var syncJob: Job? = null
   private val mediaTrashDelegate = MediaTrashDelegate(ctx)
 
-  // The volumes mounted when the current sync listed the albums. The rows of a volume ejected after that survive
-  // this sync, so the checkpoint has to keep the volume for the next sync to tell the ejection from deletions
-  @Volatile
-  protected var volumesAtAlbumQuery: Set<String> = emptySet()
-    private set
+  private val prefs = ctx.getSharedPreferences(SHARED_PREF_NAME, Context.MODE_PRIVATE)
 
-  protected open fun getMountedVolumes(): Set<String> = emptySet()
+  // The folder and volume of each album and the mounted volumes when the current sync listed the albums. An album is
+  // a folder, which lies on one volume, so the deletion sync can tell the albums of an ejected volume apart
+  @Volatile
+  private var albumFoldersAtAlbumQuery: Map<String, String>? = null
+
+  @Volatile
+  private var albumVolumesAtAlbumQuery: Map<String, String> = emptyMap()
+
+  @Volatile
+  private var volumesAtAlbumQuery: Set<String> = emptySet()
 
   companion object {
     private const val MAX_CONCURRENT_HASH_OPERATIONS = 16
@@ -111,6 +119,17 @@ open class NativeSyncApiImplBase(context: Context) : ImmichPlugin(), ActivityAwa
 
     // Keep IN clauses below SQLite's default bound-variable limit (999).
     private const val SQLITE_MAX_VARIABLE_NUMBER = 900
+
+    private const val SHARED_PREF_NAME = "Immich::MediaManager"
+    private const val SHARED_PREF_ALBUM_FOLDERS_KEY = "MediaStore::albumFolders"
+    private const val SHARED_PREF_ALBUM_VOLUMES_KEY = "MediaStore::albumVolumes"
+
+    // The name of the primary volume before Android 10, which has no MediaStore volume names
+    private const val PRIMARY_VOLUME = "primary"
+
+    // The folder and volume of an album whose files lie in several folders or in none that is known. Never a mounted
+    // volume
+    private const val UNKNOWN = ""
 
     // _special_format: added in API level 37, also in S Extensions 21+
     // https://developer.android.com/reference/android/provider/MediaStore.Files.FileColumns#SPECIAL_FORMAT
@@ -319,12 +338,19 @@ open class NativeSyncApiImplBase(context: Context) : ImmichPlugin(), ActivityAwa
     volumesAtAlbumQuery = getMountedVolumes()
     val albums = mutableListOf<PlatformAlbum>()
     val albumsCount = mutableMapOf<String, Int>()
+    val albumFolders = mutableMapOf<String, String>()
+    val albumVolumes = mutableMapOf<String, String>()
 
-    val projection = arrayOf(
-      MediaStore.Files.FileColumns.BUCKET_ID,
-      MediaStore.Files.FileColumns.BUCKET_DISPLAY_NAME,
-      MediaStore.Files.FileColumns.DATE_MODIFIED,
-    )
+    val projection = buildList {
+      add(MediaStore.Files.FileColumns.BUCKET_ID)
+      add(MediaStore.Files.FileColumns.BUCKET_DISPLAY_NAME)
+      add(MediaStore.Files.FileColumns.DATE_MODIFIED)
+      add(MediaStore.MediaColumns.DATA)
+      // Before Android 10 the volume is found from the path
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        add(MediaStore.MediaColumns.VOLUME_NAME)
+      }
+    }.toTypedArray()
     val selection =
       "(${MediaStore.Files.FileColumns.BUCKET_ID} IS NOT NULL) AND $MEDIA_SELECTION"
 
@@ -342,10 +368,27 @@ open class NativeSyncApiImplBase(context: Context) : ImmichPlugin(), ActivityAwa
         cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.BUCKET_DISPLAY_NAME)
       val dateModified =
         cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DATE_MODIFIED)
+      val dataColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATA)
+      val volumeColumn = cursor.getColumnIndex(MediaStore.MediaColumns.VOLUME_NAME)
 
       while (cursor.moveToNext()) {
         currentCoroutineContext().ensureActive()
         val id = cursor.getString(bucketIdColumn)
+
+        // The id hashes the lowercased folder path, so two folders only share it by a collision. Rows of one folder can
+        // spell its path in another case, which the storage resolves alike
+        val folder = cursor.getStringOrNull(dataColumn)?.let { File(it).parent } ?: UNKNOWN
+        val albumFolder = albumFolders.putIfAbsent(id, folder)
+        if (albumFolder == null) {
+          albumVolumes[id] = when {
+            folder == UNKNOWN -> UNKNOWN
+            volumeColumn >= 0 -> cursor.getStringOrNull(volumeColumn) ?: UNKNOWN
+            else -> getStorageVolume(folder)
+          }
+        } else if (!albumFolder.equals(folder, ignoreCase = true)) {
+          albumFolders[id] = UNKNOWN
+          albumVolumes[id] = UNKNOWN
+        }
 
         val count = albumsCount.getOrDefault(id, 0)
         if (count != 0) {
@@ -360,9 +403,65 @@ open class NativeSyncApiImplBase(context: Context) : ImmichPlugin(), ActivityAwa
         albumsCount[id] = 1
       }
     }
+    albumVolumesAtAlbumQuery = albumVolumes
+    albumFoldersAtAlbumQuery = albumFolders
 
     return albums.map { it.copy(assetCount = albumsCount[it.id]?.toLong() ?: 0) }
       .sortedBy { it.id }
+  }
+
+  // The names of the mounted volumes, as getAlbums finds them for the albums
+  private fun getMountedVolumes(): Set<String> =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+      MediaStore.getExternalVolumeNames(ctx)
+    } else {
+      ctx.getSystemService(StorageManager::class.java)?.storageVolumes.orEmpty()
+        .filter { it.state == Environment.MEDIA_MOUNTED }
+        .map { it.uuid ?: PRIMARY_VOLUME }
+        .toSet()
+    }
+
+  private fun getStorageVolume(path: String): String =
+    runCatching { ctx.getSystemService(StorageManager::class.java)?.getStorageVolume(File(path)) }.getOrNull()
+      ?.let { it.uuid ?: PRIMARY_VOLUME } ?: UNKNOWN
+
+  // Lets the next sync know where the albums lie that it no longer lists
+  protected fun saveAlbumLocations() {
+    val albumFolders = albumFoldersAtAlbumQuery ?: return
+    runCatching {
+      prefs.edit().apply {
+        putString(SHARED_PREF_ALBUM_FOLDERS_KEY, Json.encodeToString(albumFolders))
+        putString(SHARED_PREF_ALBUM_VOLUMES_KEY, Json.encodeToString(albumVolumesAtAlbumQuery))
+        apply()
+      }
+    }
+  }
+
+  private fun getSavedAlbumLocations(key: String): Map<String, String> =
+    runCatching { prefs.getString(key, null)?.let { Json.decodeFromString<Map<String, String>>(it) } }
+      .getOrNull().orEmpty()
+
+  fun getMissingAssetIds(assets: List<PlatformAssetFile>): List<String> {
+    val listedFolders = albumFoldersAtAlbumQuery.orEmpty()
+    val listedVolumes = albumVolumesAtAlbumQuery
+    // The folder of an album that this sync no longer lists comes from the last sync
+    val allListed = assets.all { it.albumId in listedFolders }
+    val savedFolders = if (allListed) emptyMap() else getSavedAlbumLocations(SHARED_PREF_ALBUM_FOLDERS_KEY)
+    val savedVolumes = if (allListed) emptyMap() else getSavedAlbumLocations(SHARED_PREF_ALBUM_VOLUMES_KEY)
+    val mounted = getMountedVolumes()
+    val missing = assets.filter { asset ->
+      val folder = listedFolders[asset.albumId] ?: savedFolders[asset.albumId] ?: UNKNOWN
+      val volume = listedVolumes[asset.albumId] ?: savedVolumes[asset.albumId] ?: UNKNOWN
+      // A volume that is not mounted now or was not when the albums were listed, e.g. an ejected SD card, or that is
+      // unknown, keeps its files. A file that is still in its folder got a new id, e.g. when MediaStore scanned its
+      // volume anew, which Android 9 and older do for an SD card that was out
+      folder != UNKNOWN && volume in volumesAtAlbumQuery && volume in mounted && !File(folder, asset.name).exists()
+    }
+    // A volume ejected during the checks takes its files along
+    val stillMounted = getMountedVolumes()
+    return missing.filter { asset ->
+      (listedVolumes[asset.albumId] ?: savedVolumes[asset.albumId] ?: UNKNOWN) in stillMounted
+    }.map { it.id }
   }
 
   fun getAssetIdsForAlbum(albumId: String, callback: (Result<List<String>>) -> Unit) {
@@ -563,7 +662,7 @@ open class NativeSyncApiImplBase(context: Context) : ImmichPlugin(), ActivityAwa
     return emptyList()
   }
 
-  open fun getExistingAssetIds(assetIds: List<String>): List<String> {
+  fun getExistingAssetIds(assetIds: List<String>): List<String> {
     if (assetIds.isEmpty()) {
       return emptyList()
     }

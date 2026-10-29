@@ -50,6 +50,7 @@ typedef SnapshotCandidate = ({
   String localId,
   String remoteId,
   String checksum,
+  String name,
   bool inIosSharedAlbum,
   String? albumId,
   String? albumName,
@@ -487,8 +488,9 @@ class LocalDeletionRepository extends DatabaseAccessor<Drift> with $LocalDeletio
       await _db.customStatement(
         '''
         INSERT INTO local_deletion_snapshot
-          (snapshot_id, local_id, remote_id, checksum, in_ios_shared_album, album_id, album_name)
-        SELECT ?, la.id, ra.id, la.checksum, la.id IN ($_kIosSharedAlbumAssetIds), listing.album_id, listing.album_name
+          (snapshot_id, local_id, remote_id, checksum, name, in_ios_shared_album, album_id, album_name)
+        SELECT ?, la.id, ra.id, la.checksum, la.name, la.id IN ($_kIosSharedAlbumAssetIds), listing.album_id,
+          listing.album_name
         FROM local_asset_entity la
         INNER JOIN remote_asset_entity ra ON ra.checksum = la.checksum
         LEFT JOIN (${_listingAlbumsSql('laa.asset_id IN (SELECT id FROM local_asset_entity WHERE checksum IS NOT NULL)')})
@@ -517,7 +519,7 @@ class LocalDeletionRepository extends DatabaseAccessor<Drift> with $LocalDeletio
       final rows = await _db
           .customSelect(
             '''
-        SELECT s.local_id AS local_id, s.remote_id AS remote_id, s.checksum AS checksum,
+        SELECT s.local_id AS local_id, s.remote_id AS remote_id, s.checksum AS checksum, s.name AS name,
           s.in_ios_shared_album AS in_ios_shared_album, s.album_id AS album_id, s.album_name AS album_name
         FROM local_deletion_snapshot s
         WHERE s.snapshot_id = ?
@@ -533,6 +535,7 @@ class LocalDeletionRepository extends DatabaseAccessor<Drift> with $LocalDeletio
               localId: r.read<String>('local_id'),
               remoteId: r.read<String>('remote_id'),
               checksum: r.read<String>('checksum'),
+              name: r.read<String>('name'),
               inIosSharedAlbum: r.read<bool>('in_ios_shared_album'),
               albumId: r.read<String?>('album_id'),
               albumName: r.read<String?>('album_name'),
@@ -560,7 +563,8 @@ class LocalDeletionRepository extends DatabaseAccessor<Drift> with $LocalDeletio
   Future<void> _createSnapshotTable() {
     return _db.customStatement(
       'CREATE TEMP TABLE IF NOT EXISTS local_deletion_snapshot (snapshot_id INTEGER NOT NULL, '
-      'local_id TEXT NOT NULL, remote_id TEXT NOT NULL, checksum TEXT NOT NULL, in_ios_shared_album INTEGER NOT NULL, '
+      'local_id TEXT NOT NULL, remote_id TEXT NOT NULL, checksum TEXT NOT NULL, name TEXT NOT NULL, '
+      'in_ios_shared_album INTEGER NOT NULL, '
       'album_id TEXT, album_name TEXT, PRIMARY KEY (snapshot_id, local_id))',
     );
   }

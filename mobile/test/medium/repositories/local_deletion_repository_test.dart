@@ -501,6 +501,7 @@ void main() {
           localId: local.id,
           remoteId: remote.id,
           checksum: 'checksum-1',
+          name: local.name,
           inIosSharedAlbum: false,
           albumId: null,
           albumName: null,

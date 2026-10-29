@@ -44,20 +44,16 @@ class NativeSyncApiImpl30(context: Context) : NativeSyncApiImplBase(context), Na
   private fun shouldFullSync(): Boolean =
     MediaStore.getVersion(ctx) != prefs.getString(SHARED_PREF_MEDIA_STORE_VERSION_KEY, null)
 
-  override fun getMountedVolumes(): Set<String> = MediaStore.getExternalVolumeNames(ctx)
-
   override fun checkpointSync() {
-    val current = getMountedVolumes()
-    // A volume ejected after the albums were listed stays, so the next sync runs and does not take the rows of its
-    // albums for deletions. Its generation 0 reads the whole volume again once it is back
-    val genMap = (current + volumesAtAlbumQuery)
-      .associateWith { if (it in current) MediaStore.getGeneration(ctx, it) else 0L }
+    val genMap = MediaStore.getExternalVolumeNames(ctx)
+      .associateWith { MediaStore.getGeneration(ctx, it) }
 
     prefs.edit().apply {
       putString(SHARED_PREF_MEDIA_STORE_VERSION_KEY, MediaStore.getVersion(ctx))
       putString(SHARED_PREF_MEDIA_STORE_GEN_KEY, Json.encodeToString(genMap))
       apply()
     }
+    saveAlbumLocations()
   }
 
   override fun getMediaChanges(callback: (Result<SyncDelta>) -> Unit) {
@@ -129,13 +125,5 @@ class NativeSyncApiImpl30(context: Context) : NativeSyncApiImplBase(context), Na
     }
 
     return result.mapValues { it.value.toList() }
-  }
-
-  override fun getExistingAssetIds(assetIds: List<String>): List<String> {
-    // A volume that was mounted at the last sync and is missing now was ejected, its assets are not deleted
-    if (!MediaStore.getExternalVolumeNames(ctx).containsAll(getSavedGenerationMap().keys)) {
-      return assetIds
-    }
-    return super.getExistingAssetIds(assetIds)
   }
 }

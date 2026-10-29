@@ -475,12 +475,38 @@ class LocalSyncService {
       if (album.isSmart) album.id,
   ];
 
+  /// The [candidates] whose file may be gone. An Android album is a folder on one volume, so the assets of an album on
+  /// an ejected SD card or USB drive or on an unknown volume are not deleted, and neither are those whose file is still
+  /// in the folder under a new id, e.g. after MediaStore scanned the volume anew
+  Future<List<SnapshotCandidate>> _withMissingFiles(List<SnapshotCandidate> candidates) async {
+    if (candidates.isEmpty) {
+      return candidates;
+    }
+    final missing = (await _nativeSyncApi.getMissingAssetIds([
+      for (final c in candidates)
+        if (c.albumId != null) PlatformAssetFile(id: c.localId, albumId: c.albumId!, name: c.name),
+    ])).toSet();
+    final withMissingFiles = [
+      for (final c in candidates)
+        if (missing.contains(c.localId)) c,
+    ];
+    if (withMissingFiles.length < candidates.length) {
+      _log.info(
+        "${candidates.length - withMissingFiles.length} backed-up assets are still on the device or its volume",
+      );
+    }
+    return withMissingFiles;
+  }
+
   /// Detects deletions from the pre-reconciliation snapshot, re-verifying each
   /// candidate against the device before queuing so hidden or moved assets that
   /// merely lost their local row are not mistaken for deletions.
   Future<void> _detectAndQueueDeletionsFromSnapshot(_DeletionSnapshot snapshot, Set<String> queuedBySync) async {
-    final candidates = await _localDeletionRepository.getSnapshotDeletionCandidates(snapshot.id);
+    var candidates = await _localDeletionRepository.getSnapshotDeletionCandidates(snapshot.id);
     try {
+      if (CurrentPlatform.isAndroid) {
+        candidates = await _withMissingFiles(candidates);
+      }
       if (candidates.isEmpty) {
         return;
       }

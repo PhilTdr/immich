@@ -112,6 +112,11 @@ void main() {
     ).thenAnswer((_) async => <SnapshotCandidate>[]);
     when(() => mockLocalDeletionRepository.clearSnapshotAndConsumeExclusions(any())).thenAnswer((_) async {});
     when(() => mockNativeSyncApi.getExistingAssetIds(any())).thenAnswer((_) async => <String>[]);
+    when(() => mockNativeSyncApi.getMissingAssetIds(any())).thenAnswer(
+      (invocation) async => [
+        for (final asset in invocation.positionalArguments.first as List<PlatformAssetFile>) asset.id,
+      ],
+    );
     when(
       () => mockLocalDeletionRepository.getBackedUp(
         any(),
@@ -299,6 +304,7 @@ void main() {
         localId: 'local-$i',
         remoteId: 'remote-$i',
         checksum: 'checksum-$i',
+        name: 'photo.jpg',
         inIosSharedAlbum: sharedFrom >= 0 && i >= sharedFrom,
         albumId: 'album-1',
         albumName: 'Camera',
@@ -779,6 +785,7 @@ void main() {
               localId: 'local-1',
               remoteId: 'remote-1',
               checksum: 'checksum-1',
+              name: 'photo.jpg',
               inIosSharedAlbum: true,
               albumId: 'album-1',
               albumName: 'Camera',
@@ -1157,6 +1164,7 @@ void main() {
             localId: 'local-1',
             remoteId: 'remote-1',
             checksum: 'checksum-1',
+            name: 'photo.jpg',
             inIosSharedAlbum: false,
             albumId: 'album-1',
             albumName: 'Camera',
@@ -1187,6 +1195,9 @@ void main() {
         ),
         () => mockLocalAlbumRepository.syncDeletes('album-1', any()),
         () => mockLocalDeletionRepository.getSnapshotDeletionCandidates(1),
+        () => mockNativeSyncApi.getMissingAssetIds([
+          PlatformAssetFile(id: 'local-1', albumId: 'album-1', name: 'photo.jpg'),
+        ]),
         () => mockNativeSyncApi.getExistingAssetIds(['local-1']),
         () => mockLocalDeletionRepository.upsert(
           UserStub.admin.id,
@@ -1196,6 +1207,79 @@ void main() {
         () => mockLocalDeletionRepository.clearSnapshotAndConsumeExclusions(1),
         () => mockNativeSyncApi.checkpointSync(),
       ]);
+    });
+
+    group('volumes', () {
+      setUp(() async {
+        await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletions, true);
+        stubDeltaSync(const [], albums: [album]);
+        when(() => mockLocalDeletionRepository.getSnapshotDeletionCandidates(any())).thenAnswer(
+          (_) async => [
+            for (final (i, albumId) in [(1, 'card'), (2, 'album-1'), (3, null)])
+              (
+                localId: 'local-$i',
+                remoteId: 'remote-$i',
+                checksum: 'checksum-$i',
+                name: 'photo.jpg',
+                inIosSharedAlbum: false,
+                albumId: albumId,
+                albumName: albumId,
+              ),
+          ],
+        );
+      });
+
+      test('checks only the assets of albums on a mounted volume, the others are not deleted', () async {
+        // The SD card with the album card was ejected
+        when(() => mockNativeSyncApi.getMissingAssetIds(any())).thenAnswer((_) async => ['local-2']);
+
+        await sut.sync();
+
+        // Without an album the volume is unknown
+        verify(
+          () => mockNativeSyncApi.getMissingAssetIds([
+            PlatformAssetFile(id: 'local-1', albumId: 'card', name: 'photo.jpg'),
+            PlatformAssetFile(id: 'local-2', albumId: 'album-1', name: 'photo.jpg'),
+          ]),
+        ).called(1);
+        verify(() => mockNativeSyncApi.getExistingAssetIds(['local-2'])).called(1);
+        verify(
+          () => mockLocalDeletionRepository.upsert(UserStub.admin.id, {
+            'remote-2': (checksum: 'checksum-2', albumId: 'album-1', albumName: 'album-1'),
+          }, awaitingConfirmation: false),
+        ).called(1);
+        verify(() => mockLocalDeletionRepository.clearSnapshotAndConsumeExclusions(1)).called(1);
+      });
+
+      test('queues nothing when no album is on a mounted volume', () async {
+        when(() => mockNativeSyncApi.getMissingAssetIds(any())).thenAnswer((_) async => []);
+
+        await sut.sync();
+
+        verifyNever(() => mockNativeSyncApi.getExistingAssetIds(any()));
+        verifyNever(
+          () => mockLocalDeletionRepository.upsert(
+            any(),
+            any(),
+            awaitingConfirmation: any(named: 'awaitingConfirmation'),
+          ),
+        );
+        verify(() => mockLocalDeletionRepository.clearSnapshotAndConsumeExclusions(1)).called(1);
+      });
+
+      test('does not ask for volumes on iOS', () async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+        addTearDown(() => debugDefaultTargetPlatformOverride = TargetPlatform.android);
+        when(() => mockNativeSyncApi.getAlbums()).thenAnswer((_) async => const []);
+        when(
+          () => mockLocalAlbumRepository.getAll(sortBy: const {SortLocalAlbumsBy.id}),
+        ).thenAnswer((_) async => const []);
+
+        await sut.fullSync();
+
+        verifyNever(() => mockNativeSyncApi.getMissingAssetIds(any()));
+        verify(() => mockNativeSyncApi.getExistingAssetIds(['local-1', 'local-2', 'local-3'])).called(1);
+      });
     });
 
     test('does not queue the deletions when the setting was turned off during the sync', () async {
@@ -1318,6 +1402,7 @@ void main() {
             localId: 'local-1',
             remoteId: 'remote-1',
             checksum: 'checksum-1',
+            name: 'photo.jpg',
             inIosSharedAlbum: false,
             albumId: 'album-1',
             albumName: 'Camera',
@@ -1384,6 +1469,7 @@ void main() {
               localId: 'local-1',
               remoteId: 'remote-1',
               checksum: 'checksum-1',
+              name: 'photo.jpg',
               inIosSharedAlbum: true,
               albumId: 'shared-1',
               albumName: 'Shared',
@@ -1485,6 +1571,7 @@ void main() {
             localId: 'local-1',
             remoteId: 'remote-1',
             checksum: 'checksum-1',
+            name: 'photo.jpg',
             inIosSharedAlbum: false,
             albumId: 'album-1',
             albumName: 'Camera',
@@ -1523,6 +1610,7 @@ void main() {
               localId: localId,
               remoteId: 'remote-$i',
               checksum: 'checksum-$i',
+              name: 'photo.jpg',
               inIosSharedAlbum: false,
               albumId: 'album-1',
               albumName: 'Camera',
@@ -1553,6 +1641,7 @@ void main() {
             localId: 'local-1',
             remoteId: 'remote-1',
             checksum: 'checksum-1',
+            name: 'photo.jpg',
             inIosSharedAlbum: false,
             albumId: 'trip',
             albumName: 'Trip',

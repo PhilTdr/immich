@@ -77,6 +77,14 @@ class PlatformAlbum {
   });
 }
 
+class PlatformAssetFile {
+  final String id;
+  final String albumId;
+  final String name;
+
+  const PlatformAssetFile({required this.id, required this.albumId, required this.name});
+}
+
 class SyncDelta {
   final bool hasChanges;
   final List<PlatformAsset> updates;
@@ -164,6 +172,12 @@ abstract class NativeSyncApi {
   // The ids that still exist on the device, including hidden assets
   @TaskQueue(type: TaskQueueType.serialBackgroundThread)
   List<String> getExistingAssetIds(List<String> assetIds);
+
+  // The ids among [assets] whose file may be gone: the folder of their album lies on a volume that was mounted when the
+  // albums were listed and still is, and holds no file with their name. Leaves out the assets of an ejected volume, e.g.
+  // an SD card, of an unknown volume, and those whose file got a new id. Android only
+  @TaskQueue(type: TaskQueueType.serialBackgroundThread)
+  List<String> getMissingAssetIds(List<PlatformAssetFile> assets);
 
   // The ids of the images and videos on the device whose file size is one of [sizes], with that size
   @TaskQueue(type: TaskQueueType.serialBackgroundThread)
