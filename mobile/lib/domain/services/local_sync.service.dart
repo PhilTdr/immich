@@ -102,10 +102,6 @@ class LocalSyncService {
       // Record deletion intents before processDelta removes the local rows, and before updateAll drops the vanished
       // albums that are not selected for backup, whose links tell the assets of iOS shared albums apart.
       final ownerId = CurrentPlatform.isIOS && delta.deletes.isNotEmpty ? await _deletionSyncOwner() : null;
-      if (ownerId != null) {
-        // The delta also reports the assets of a shared album that left the device
-        await _excludeVanishedIosSharedAlbums(deviceAlbums);
-      }
       final excluded = ownerId != null
           ? await recordLocallyDeletedFromDelta(
               delta.deletes,
@@ -256,7 +252,6 @@ class LocalSyncService {
   Future<void> removeAlbum(LocalAlbum a) async {
     _log.fine("Removing device album ${a.name}");
     try {
-      await _excludeWholeIosSharedAlbum(a);
       // Asset deletion is handled in the repository
       await _localAlbumRepository.deleteAlbum(a.id);
     } catch (e, s) {
@@ -348,10 +343,8 @@ class LocalSyncService {
           : <LocalAsset>[];
       final assetsInDb = dbAlbum.assetCount > 0 ? await _localAlbumRepository.getAssets(dbAlbum.id) : <LocalAsset>[];
 
-      // Also when the album was counted but vanished before its assets were read
-      if (assetsInDevice.isEmpty) {
+      if (deviceAlbum.assetCount == 0) {
         _log.fine("Device album ${deviceAlbum.name} is empty. Removing assets from DB.");
-        await _excludeWholeIosSharedAlbum(dbAlbum);
         await _localAlbumRepository.upsert(
           deviceAlbum.copyWith(backupSelection: dbAlbum.backupSelection),
           toDelete: assetsInDb.map((a) => a.id),
@@ -482,33 +475,6 @@ class LocalSyncService {
       if (album.isSmart) album.id,
   ];
 
-  /// A shared album that leaves the device or empties as a whole (Shared Albums turned off, album left, iCloud signed
-  /// out) is a device state change, not removals by its members. Its assets are excluded before their rows go, so
-  /// their server copies are not trashed. Only while deletions are detected, which consumes the exclusions again
-  Future<void> _excludeWholeIosSharedAlbum(LocalAlbum album) async {
-    if (!album.isIosSharedAlbum || !_syncLocalDeletionsInIosSharedAlbums || await _deletionSyncOwner() == null) {
-      return;
-    }
-    await _localDeletionRepository.markExcluded(await _localAlbumRepository.getAssetIds(album.id));
-  }
-
-  /// Like [_excludeWholeIosSharedAlbum] for the stored shared albums that [deviceAlbums] no longer lists or lists
-  /// empty, once the caller resolved the deletion sync owner
-  Future<void> _excludeVanishedIosSharedAlbums(List<PlatformAlbum> deviceAlbums) async {
-    if (!_syncLocalDeletionsInIosSharedAlbums) {
-      return;
-    }
-    final remaining = {
-      for (final album in deviceAlbums)
-        if (album.assetCount > 0) album.id,
-    };
-    for (final album in await _localAlbumRepository.getAll()) {
-      if (album.isIosSharedAlbum && !remaining.contains(album.id)) {
-        await _localDeletionRepository.markExcluded(await _localAlbumRepository.getAssetIds(album.id));
-      }
-    }
-  }
-
   /// Detects deletions from the pre-reconciliation snapshot, re-verifying each
   /// candidate against the device before queuing so hidden or moved assets that
   /// merely lost their local row are not mistaken for deletions.
@@ -593,7 +559,7 @@ class LocalSyncService {
       return excluded;
     }
 
-    // The cached option, which also decided whether the shared albums that left the device were excluded
+    // The cached option. Reading the settings again below may only narrow what this sync queues
     final includeIosSharedAlbums = _syncLocalDeletionsInIosSharedAlbums;
     var backedUp = await _localDeletionRepository.getBackedUp(
       ownerId,
