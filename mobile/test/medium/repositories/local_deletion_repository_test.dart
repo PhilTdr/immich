@@ -25,6 +25,11 @@ void main() {
     await ctx.dispose();
   });
 
+  Map<String, DeletedAsset> deleted(Map<String, String> checksums) => {
+    for (final MapEntry(key: remoteId, value: checksum) in checksums.entries)
+      remoteId: (checksum: checksum, albumId: null, albumName: null),
+  };
+
   Future<Set<String>> queuedRemoteIds() async {
     final rows = await ctx.db.select(ctx.db.localDeletionEntity).get();
     return rows.map((r) => r.remoteId).toSet();
@@ -46,20 +51,45 @@ void main() {
     )..where((row) => row.remoteId.equals(remoteId))).write(LocalDeletionEntityCompanion(createdAt: .new(createdAt)));
   }
 
+  Map<String, String> checksums(Map<String, DeletedAsset> deletions) => {
+    for (final MapEntry(:key, :value) in deletions.entries) key: value.checksum,
+  };
+
+  Future<Set<String>> awaitingRemoteIds() async {
+    final rows = await (ctx.db.select(
+      ctx.db.localDeletionEntity,
+    )..where((row) => row.awaitingConfirmation.equals(true))).get();
+    return rows.map((r) => r.remoteId).toSet();
+  }
+
   group('upsert', () {
     test('inserts and updates queue rows keyed by remote id', () async {
-      await sut.upsert(userId, {'remote-1': 'checksum-1'});
+      await sut.upsert(userId, deleted({'remote-1': 'checksum-1'}));
       expect(await queuedRemoteIds(), {'remote-1'});
 
-      await sut.upsert(userId, {'remote-1': 'checksum-1-updated', 'remote-2': 'checksum-2'});
+      await sut.upsert(userId, deleted({'remote-1': 'checksum-1-updated', 'remote-2': 'checksum-2'}));
       expect(await queuedChecksums(), {'remote-1': 'checksum-1-updated', 'remote-2': 'checksum-2'});
     });
 
+    test('stores the album and whether the deletions await confirmation', () async {
+      await sut.upsert(userId, {
+        'remote-1': (checksum: 'checksum-1', albumId: 'album-1', albumName: 'Camera'),
+      }, awaitingConfirmation: true);
+      await sut.upsert(userId, deleted({'remote-2': 'checksum-2'}));
+
+      final rows = {for (final r in await ctx.db.select(ctx.db.localDeletionEntity).get()) r.remoteId: r};
+      expect(rows['remote-1']!.albumId, 'album-1');
+      expect(rows['remote-1']!.albumName, 'Camera');
+      expect(rows['remote-1']!.awaitingConfirmation, isTrue);
+      expect(rows['remote-2']!.albumId, isNull);
+      expect(rows['remote-2']!.awaitingConfirmation, isFalse);
+    });
+
     test('keeps the original createdAt when an intent is queued again', () async {
-      await sut.upsert(userId, {'remote-1': 'checksum-1'});
+      await sut.upsert(userId, deleted({'remote-1': 'checksum-1'}));
       await backdate('remote-1', DateTime.utc(2024));
 
-      await sut.upsert(userId, {'remote-1': 'checksum-1'});
+      await sut.upsert(userId, deleted({'remote-1': 'checksum-1'}));
 
       final row = await ctx.db.select(ctx.db.localDeletionEntity).getSingle();
       expect(row.createdAt.isAtSameMomentAs(DateTime.utc(2024)), isTrue);
@@ -71,7 +101,7 @@ void main() {
       final remote = await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1');
       await ctx.newLocalAsset(id: 'local-1', checksum: 'checksum-1');
 
-      expect(await sut.getBackedUp(userId, ['local-1']), {remote.id: 'checksum-1'});
+      expect(checksums(await sut.getBackedUp(userId, ['local-1'])), {remote.id: 'checksum-1'});
     });
 
     test('ignores a partner-owned remote that merely shares the checksum', () async {
@@ -110,7 +140,7 @@ void main() {
       await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1', libraryId: 'library-1');
       await ctx.newLocalAsset(id: 'local-1', checksum: 'checksum-1');
 
-      expect(await sut.getBackedUp(userId, ['local-1']), {uploaded.id: 'checksum-1'});
+      expect(checksums(await sut.getBackedUp(userId, ['local-1'])), {uploaded.id: 'checksum-1'});
     });
 
     test('ignores local assets that are not backed up', () async {
@@ -134,52 +164,143 @@ void main() {
       await ctx.newLocalAsset(id: 'local-1', checksum: 'checksum-1');
       await ctx.newLocalAlbumAsset(albumId: album.id, assetId: 'local-1');
 
-      expect(await sut.getBackedUp(userId, ['local-1'], includeIosSharedAlbums: true), {remote.id: 'checksum-1'});
+      expect(checksums(await sut.getBackedUp(userId, ['local-1'], includeIosSharedAlbums: true)), {
+        remote.id: 'checksum-1',
+      });
+    });
+
+    group('album', () {
+      // Recents holds every asset, Selfies and Trip two each
+      Future<void> stubIosLibrary() async {
+        await ctx.newLocalAlbum(id: 'recents', name: 'Recents');
+        await ctx.newLocalAlbum(id: 'selfies', name: 'Selfies');
+        await ctx.newLocalAlbum(id: 'trip', name: 'Trip');
+        for (int i = 1; i <= 4; i++) {
+          await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-$i');
+          await ctx.newLocalAsset(id: 'local-$i', checksum: 'checksum-$i');
+          await ctx.newLocalAlbumAsset(albumId: 'recents', assetId: 'local-$i');
+        }
+        await ctx.newLocalAlbumAsset(albumId: 'selfies', assetId: 'local-1');
+        await ctx.newLocalAlbumAsset(albumId: 'trip', assetId: 'local-1');
+        await ctx.newLocalAlbumAsset(albumId: 'trip', assetId: 'local-2');
+        await ctx.newLocalAlbumAsset(albumId: 'selfies', assetId: 'local-3');
+      }
+
+      // The album name of each of the first three assets, by checksum
+      Future<Map<String, String?>> albumNames({List<String> smartAlbumIds = const []}) async {
+        final backedUp = await sut.getBackedUp(userId, ['local-1', 'local-2', 'local-3'], smartAlbumIds: smartAlbumIds);
+        return {for (final deleted in backedUp.values) deleted.checksum: deleted.albumName};
+      }
+
+      test('lists each asset under the smallest album it is in', () async {
+        await stubIosLibrary();
+
+        expect(await albumNames(), {'checksum-1': 'Selfies', 'checksum-2': 'Trip', 'checksum-3': 'Selfies'});
+      });
+
+      test('prefers albums over smart albums, and the largest smart album over the others', () async {
+        await stubIosLibrary();
+
+        expect(await albumNames(smartAlbumIds: ['recents', 'selfies']), {
+          'checksum-1': 'Trip',
+          'checksum-2': 'Trip',
+          'checksum-3': 'Recents',
+        });
+      });
+
+      test('returns the album id with its name', () async {
+        await stubIosLibrary();
+
+        final backedUp = await sut.getBackedUp(userId, ['local-2']);
+
+        expect(backedUp.values.single, (checksum: 'checksum-2', albumId: 'trip', albumName: 'Trip'));
+      });
+
+      test('leaves the album out for assets in no album', () async {
+        final remote = await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1');
+        await ctx.newLocalAsset(id: 'local-1', checksum: 'checksum-1');
+
+        expect(await sut.getBackedUp(userId, ['local-1']), {
+          remote.id: (checksum: 'checksum-1', albumId: null, albumName: null),
+        });
+      });
     });
   });
 
-  group('countBackedUp', () {
-    test('counts the backed-up copies of all local assets as getBackedUp resolves them', () async {
-      final partner = await ctx.newUser();
-      await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1');
-      await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-2');
-      await ctx.newRemoteAsset(ownerId: partner.id, checksum: 'checksum-3');
-      await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-4', deletedAt: DateTime(2024));
-      await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-5', libraryId: 'library-1');
-      await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-6', visibility: AssetVisibility.hidden);
-      for (int i = 1; i <= 7; i++) {
-        await ctx.newLocalAsset(id: 'local-$i', checksum: 'checksum-$i');
-      }
+  group('awaiting confirmation', () {
+    Future<void> queueHeldAndScheduled() async {
+      await sut.upsert(
+        userId,
+        deleted({'remote-held-1': 'checksum-1', 'remote-held-2': 'checksum-2'}),
+        awaitingConfirmation: true,
+      );
+      await sut.upsert(userId, deleted({'remote-scheduled': 'checksum-3'}));
+    }
 
-      expect(await sut.countBackedUp(userId), 2);
+    test('getPending leaves out the deletions that await confirmation', () async {
+      await queueHeldAndScheduled();
+
+      expect(await sut.getPending(userId, settledBefore: DateTime.now().add(const Duration(minutes: 1))), [
+        'remote-scheduled',
+      ]);
     });
 
-    test('counts a backed-up copy once when several local assets share it', () async {
-      await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1');
-      await ctx.newLocalAsset(id: 'local-1', checksum: 'checksum-1');
-      await ctx.newLocalAsset(id: 'local-2', checksum: 'checksum-1');
+    test('hasAwaitingConfirmation is true while a deletion of the account awaits confirmation', () async {
+      expect(await sut.hasAwaitingConfirmation(userId), isFalse);
 
-      expect(await sut.countBackedUp(userId), 1);
+      await sut.upsert('other-user', deleted({'remote-other': 'checksum-1'}), awaitingConfirmation: true);
+      await sut.upsert(userId, deleted({'remote-1': 'checksum-2'}));
+      expect(await sut.hasAwaitingConfirmation(userId), isFalse);
+
+      await sut.upsert(userId, deleted({'remote-2': 'checksum-3'}), awaitingConfirmation: true);
+      expect(await sut.hasAwaitingConfirmation(userId), isTrue);
     });
 
-    test('leaves out assets of iOS shared albums', () async {
-      final shared = await ctx.newLocalAlbum(isIosSharedAlbum: true);
-      final regular = await ctx.newLocalAlbum();
-      for (int i = 1; i <= 3; i++) {
-        await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-$i');
-        await ctx.newLocalAsset(id: 'local-$i', checksum: 'checksum-$i');
-      }
-      await ctx.newLocalAlbumAsset(albumId: shared.id, assetId: 'local-1');
-      await ctx.newLocalAlbumAsset(albumId: regular.id, assetId: 'local-2');
-      await ctx.newLocalAlbumAsset(albumId: regular.id, assetId: 'local-3');
+    test('holdForConfirmation holds the pending deletions but not the flushed ones', () async {
+      await sut.upsert(userId, deleted({'remote-1': 'checksum-1', 'remote-2': 'checksum-2', 'remote-3': 'checksum-3'}));
+      await sut.markTrashed(['remote-2']);
 
-      expect(await sut.countBackedUp(userId), 2);
+      await sut.holdForConfirmation(['remote-1', 'remote-2']);
+
+      expect(await awaitingRemoteIds(), {'remote-1'});
+    });
+
+    test('confirm releases the deletions to the queue', () async {
+      await queueHeldAndScheduled();
+
+      await sut.confirm(['remote-held-1']);
+
+      expect(await awaitingRemoteIds(), {'remote-held-2'});
+      expect(
+        await sut.getPending(userId, settledBefore: DateTime.now().add(const Duration(minutes: 1))),
+        unorderedEquals(['remote-held-1', 'remote-scheduled']),
+      );
+    });
+
+    test('discard drops only the deletions that await confirmation', () async {
+      await queueHeldAndScheduled();
+
+      await sut.discard(['remote-held-1', 'remote-scheduled']);
+
+      expect(await queuedRemoteIds(), {'remote-held-2', 'remote-scheduled'});
+    });
+
+    test('watchPending emits the album and whether a deletion awaits confirmation', () async {
+      await sut.upsert(userId, {
+        'remote-1': (checksum: 'checksum-1', albumId: 'album-1', albumName: 'Camera'),
+      }, awaitingConfirmation: true);
+
+      final pending = (await sut.watchPending(userId).first).single;
+
+      expect(pending.albumId, 'album-1');
+      expect(pending.albumName, 'Camera');
+      expect(pending.awaitingConfirmation, isTrue);
     });
   });
 
   group('getPending', () {
     test('returns the remote ids queued for the account', () async {
-      await sut.upsert(userId, {'remote-1': 'checksum-1', 'remote-2': 'checksum-2'});
+      await sut.upsert(userId, deleted({'remote-1': 'checksum-1', 'remote-2': 'checksum-2'}));
 
       expect(
         await sut.getPending(userId, settledBefore: DateTime.now().add(const Duration(minutes: 1))),
@@ -188,14 +309,14 @@ void main() {
     });
 
     test('excludes rows owned by another account', () async {
-      await sut.upsert(userId, {'remote-1': 'checksum-1'});
-      await sut.upsert('other-user', {'remote-2': 'checksum-2'});
+      await sut.upsert(userId, deleted({'remote-1': 'checksum-1'}));
+      await sut.upsert('other-user', deleted({'remote-2': 'checksum-2'}));
 
       expect(await sut.getPending(userId, settledBefore: DateTime.now().add(const Duration(minutes: 1))), ['remote-1']);
     });
 
     test('returns only intents queued before the settle window', () async {
-      await sut.upsert(userId, {'remote-settled': 'checksum-1', 'remote-fresh': 'checksum-2'});
+      await sut.upsert(userId, deleted({'remote-settled': 'checksum-1', 'remote-fresh': 'checksum-2'}));
       await backdate(
         'remote-settled',
         DateTime.now().subtract(kLocalDeletionSettleDuration + const Duration(minutes: 1)),
@@ -209,8 +330,8 @@ void main() {
   group('watchPending', () {
     test('emits the intents of the account oldest first, with their remote asset', () async {
       final remote = await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1');
-      await sut.upsert(userId, {remote.id: 'checksum-1', 'remote-unknown': 'checksum-2'});
-      await sut.upsert('other-user', {'remote-other': 'checksum-3'});
+      await sut.upsert(userId, deleted({remote.id: 'checksum-1', 'remote-unknown': 'checksum-2'}));
+      await sut.upsert('other-user', deleted({'remote-other': 'checksum-3'}));
       await backdate('remote-unknown', DateTime.utc(2024));
 
       final pending = await sut.watchPending(userId).first;
@@ -224,7 +345,7 @@ void main() {
 
   group('deleteByRemoteIds', () {
     test('removes the given queue rows', () async {
-      await sut.upsert(userId, {'remote-1': 'checksum-1', 'remote-2': 'checksum-2'});
+      await sut.upsert(userId, deleted({'remote-1': 'checksum-1', 'remote-2': 'checksum-2'}));
 
       await sut.deleteByRemoteIds(['remote-1']);
 
@@ -236,7 +357,10 @@ void main() {
     test('drops intents whose remote asset is already trashed', () async {
       final trashed = await ctx.newRemoteAsset(ownerId: userId, deletedAt: DateTime(2024));
       final alive = await ctx.newRemoteAsset(ownerId: userId);
-      await sut.upsert(userId, {trashed.id: 'checksum-1', alive.id: 'checksum-2', 'remote-unknown': 'checksum-3'});
+      await sut.upsert(
+        userId,
+        deleted({trashed.id: 'checksum-1', alive.id: 'checksum-2', 'remote-unknown': 'checksum-3'}),
+      );
 
       await sut.pruneAlreadyTrashed();
 
@@ -248,7 +372,7 @@ void main() {
   group('pruneRestored', () {
     test('drops intents whose content is still on the device', () async {
       await ctx.newLocalAsset(checksum: 'checksum-1');
-      await sut.upsert(userId, {'remote-1': 'checksum-1', 'remote-2': 'checksum-2'});
+      await sut.upsert(userId, deleted({'remote-1': 'checksum-1', 'remote-2': 'checksum-2'}));
 
       await sut.pruneRestored(userId);
 
@@ -257,7 +381,7 @@ void main() {
 
     test('keeps intents of other accounts', () async {
       await ctx.newLocalAsset(checksum: 'checksum-1');
-      await sut.upsert('other-user', {'remote-1': 'checksum-1'});
+      await sut.upsert('other-user', deleted({'remote-1': 'checksum-1'}));
 
       await sut.pruneRestored(userId);
 
@@ -267,7 +391,7 @@ void main() {
 
   group('flushed deletions', () {
     test('markTrashed keeps the row but takes it out of the pending queue', () async {
-      await sut.upsert(userId, {'remote-1': 'checksum-1', 'remote-2': 'checksum-2'});
+      await sut.upsert(userId, deleted({'remote-1': 'checksum-1', 'remote-2': 'checksum-2'}));
 
       await sut.markTrashed(['remote-1']);
 
@@ -279,7 +403,7 @@ void main() {
     test('the prunes of pending intents keep flushed deletions', () async {
       final trashed = await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1', deletedAt: DateTime(2024));
       await ctx.newLocalAsset(checksum: 'checksum-1');
-      await sut.upsert(userId, {trashed.id: 'checksum-1'});
+      await sut.upsert(userId, deleted({trashed.id: 'checksum-1'}));
       await sut.markTrashed([trashed.id]);
 
       await sut.pruneAlreadyTrashed();
@@ -289,11 +413,11 @@ void main() {
     });
 
     test('upsert queues a flushed deletion anew', () async {
-      await sut.upsert(userId, {'remote-1': 'checksum-1'});
+      await sut.upsert(userId, deleted({'remote-1': 'checksum-1'}));
       await backdate('remote-1', DateTime.utc(2024));
       await sut.markTrashed(['remote-1']);
 
-      await sut.upsert(userId, {'remote-1': 'checksum-1'});
+      await sut.upsert(userId, deleted({'remote-1': 'checksum-1'}));
 
       final settledBefore = DateTime.now().subtract(kLocalDeletionSettleDuration);
       expect(await sut.getPending(userId, settledBefore: settledBefore), isEmpty);
@@ -310,13 +434,16 @@ void main() {
       for (final checksum in ['checksum-1', 'checksum-3', 'checksum-4']) {
         await ctx.newLocalAsset(checksum: checksum);
       }
-      await sut.upsert(userId, {
-        restored.id: 'checksum-1',
-        notBack.id: 'checksum-2',
-        active.id: 'checksum-3',
-        pending.id: 'checksum-4',
-      });
-      await sut.upsert(otherUserId, {other.id: 'checksum-1'});
+      await sut.upsert(
+        userId,
+        deleted({
+          restored.id: 'checksum-1',
+          notBack.id: 'checksum-2',
+          active.id: 'checksum-3',
+          pending.id: 'checksum-4',
+        }),
+      );
+      await sut.upsert(otherUserId, deleted({other.id: 'checksum-1'}));
       await sut.markTrashed([restored.id, notBack.id, active.id, other.id]);
 
       expect(await sut.getRestored(userId), [restored.id]);
@@ -325,12 +452,15 @@ void main() {
     test('pruneFlushed drops the flushed deletions whose server copy left the trash', () async {
       final trashed = await ctx.newRemoteAsset(ownerId: userId, deletedAt: DateTime(2024));
       final restoredOnServer = await ctx.newRemoteAsset(ownerId: userId);
-      await sut.upsert(userId, {
-        trashed.id: 'checksum-1',
-        restoredOnServer.id: 'checksum-2',
-        'remote-purged': 'checksum-3',
-        'remote-pending': 'checksum-4',
-      });
+      await sut.upsert(
+        userId,
+        deleted({
+          trashed.id: 'checksum-1',
+          restoredOnServer.id: 'checksum-2',
+          'remote-purged': 'checksum-3',
+          'remote-pending': 'checksum-4',
+        }),
+      );
       await sut.markTrashed([trashed.id, restoredOnServer.id, 'remote-purged']);
 
       await sut.pruneFlushed();
@@ -366,9 +496,15 @@ void main() {
       await ctx.db.managers.localAssetEntity.filter((r) => r.id.equals(local.id)).delete();
       final result = await sut.getSnapshotDeletionCandidates(snapshotId);
 
-      expect(result.total, 1);
-      expect(result.candidates, [
-        (localId: local.id, remoteId: remote.id, checksum: 'checksum-1', inIosSharedAlbum: false),
+      expect(result, [
+        (
+          localId: local.id,
+          remoteId: remote.id,
+          checksum: 'checksum-1',
+          inIosSharedAlbum: false,
+          albumId: null,
+          albumName: null,
+        ),
       ]);
     });
 
@@ -376,8 +512,8 @@ void main() {
       debugDefaultTargetPlatformOverride = TargetPlatform.android;
       addTearDown(() => debugDefaultTargetPlatformOverride = null);
       final albums = LocalAlbumRepository(ctx.db);
-      await ctx.newLocalAlbum(id: 'camera');
-      await ctx.newLocalAlbum(id: 'vanished');
+      await ctx.newLocalAlbum(id: 'camera', name: 'Camera');
+      await ctx.newLocalAlbum(id: 'vanished', name: 'Vanished');
       for (final (id, albumId) in [('kept', 'camera'), ('deleted', 'camera'), ('in-vanished', 'vanished')]) {
         await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-$id');
         await ctx.newLocalAsset(id: id, checksum: 'checksum-$id');
@@ -389,8 +525,35 @@ void main() {
       await albums.syncDeletes('camera', ['kept']);
       final result = await sut.getSnapshotDeletionCandidates(snapshotId);
 
-      expect(result.total, 3);
-      expect(result.candidates.map((c) => c.localId), unorderedEquals(['deleted', 'in-vanished']));
+      // The album of each one as it was before the reconciliation, also for the album that is gone
+      expect(
+        {for (final c in result) c.localId: (c.albumId, c.albumName)},
+        {'deleted': ('camera', 'Camera'), 'in-vanished': ('vanished', 'Vanished')},
+      );
+    });
+
+    test('lists the candidates under the album that getBackedUp picks', () async {
+      await ctx.newLocalAlbum(id: 'recents', name: 'Recents');
+      await ctx.newLocalAlbum(id: 'selfies', name: 'Selfies');
+      await ctx.newLocalAlbum(id: 'trip', name: 'Trip');
+      for (int i = 1; i <= 3; i++) {
+        await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-$i');
+        await ctx.newLocalAsset(id: 'local-$i', checksum: 'checksum-$i');
+        await ctx.newLocalAlbumAsset(albumId: 'recents', assetId: 'local-$i');
+      }
+      await ctx.newLocalAlbumAsset(albumId: 'selfies', assetId: 'local-1');
+      await ctx.newLocalAlbumAsset(albumId: 'trip', assetId: 'local-1');
+      await ctx.newLocalAlbumAsset(albumId: 'trip', assetId: 'local-2');
+      await ctx.newLocalAlbumAsset(albumId: 'selfies', assetId: 'local-3');
+
+      final snapshotId = await sut.snapshotBackedUpAssets(userId, smartAlbumIds: ['recents', 'selfies']);
+      await ctx.db.managers.localAssetEntity.filter((r) => r.id.isIn(['local-1', 'local-2', 'local-3'])).delete();
+      final result = await sut.getSnapshotDeletionCandidates(snapshotId);
+
+      expect(
+        {for (final c in result) c.localId: c.albumName},
+        {'local-1': 'Trip', 'local-2': 'Trip', 'local-3': 'Recents'},
+      );
     });
 
     test('omits assets that survived the reconciliation', () async {
@@ -400,8 +563,7 @@ void main() {
       final snapshotId = await sut.snapshotBackedUpAssets(userId);
       final result = await sut.getSnapshotDeletionCandidates(snapshotId);
 
-      expect(result.candidates, isEmpty);
-      expect(result.total, 1);
+      expect(result, isEmpty);
     });
 
     test('omits excluded assets and consumes the exclusion once the row is gone', () async {
@@ -414,7 +576,7 @@ void main() {
       final result = await sut.getSnapshotDeletionCandidates(snapshotId);
       await sut.clearSnapshotAndConsumeExclusions(snapshotId);
 
-      expect(result.candidates, isEmpty);
+      expect(result, isEmpty);
       expect(await excludedLocalIds(), isEmpty);
     });
 
@@ -449,7 +611,7 @@ void main() {
       }
       final result = await sut.getSnapshotDeletionCandidates(snapshotId);
 
-      expect(result.candidates, isEmpty);
+      expect(result, isEmpty);
     });
 
     test('ignores assets of iOS shared albums', () async {
@@ -466,8 +628,7 @@ void main() {
       await ctx.db.managers.localAssetEntity.filter((r) => r.id.isIn(['local-shared', 'local-regular'])).delete();
       final result = await sut.getSnapshotDeletionCandidates(snapshotId);
 
-      expect(result.total, 1);
-      expect(result.candidates.map((c) => c.remoteId), [regularRemote.id]);
+      expect(result.map((c) => c.remoteId), [regularRemote.id]);
     });
 
     test('includes assets of iOS shared albums when asked', () async {
@@ -480,10 +641,10 @@ void main() {
       await ctx.db.managers.localAssetEntity.filter((r) => r.id.equals('local-1')).delete();
       final result = await sut.getSnapshotDeletionCandidates(snapshotId);
 
-      expect(result.candidates.map((c) => c.remoteId), [remote.id]);
+      expect(result.map((c) => c.remoteId), [remote.id]);
     });
 
-    test('flags the assets of iOS shared albums and leaves them out of the total', () async {
+    test('flags the assets of iOS shared albums', () async {
       final shared = await ctx.newLocalAlbum(isIosSharedAlbum: true);
       final regular = await ctx.newLocalAlbum();
       for (final (id, albumId) in [('local-shared', shared.id), ('local-regular', regular.id)]) {
@@ -497,11 +658,7 @@ void main() {
       await ctx.db.managers.localAssetEntity.filter((r) => r.id.isIn(['local-shared', 'local-regular'])).delete();
       final result = await sut.getSnapshotDeletionCandidates(snapshotId);
 
-      expect(result.total, 1);
-      expect(
-        {for (final c in result.candidates) c.localId: c.inIosSharedAlbum},
-        {'local-shared': true, 'local-regular': false},
-      );
+      expect({for (final c in result) c.localId: c.inIosSharedAlbum}, {'local-shared': true, 'local-regular': false});
     });
 
     test('detection without a prior snapshot returns nothing', () async {
@@ -509,8 +666,7 @@ void main() {
 
       final result = await sut.getSnapshotDeletionCandidates(1);
 
-      expect(result.candidates, isEmpty);
-      expect(result.total, 0);
+      expect(result, isEmpty);
     });
 
     test('keeps the snapshots of concurrent syncs apart', () async {
@@ -525,10 +681,7 @@ void main() {
       await sut.clearSnapshotAndConsumeExclusions(second);
       final result = await sut.getSnapshotDeletionCandidates(first);
 
-      expect(result.total, 2);
-      expect(result.candidates, [
-        (localId: local.id, remoteId: remote.id, checksum: 'checksum-1', inIosSharedAlbum: false),
-      ]);
+      expect(result.map((c) => (c.localId, c.remoteId)), [(local.id, remote.id)]);
     });
 
     test('keeps exclusions that another snapshot still needs', () async {
@@ -542,7 +695,7 @@ void main() {
       await sut.clearSnapshotAndConsumeExclusions(first);
 
       expect(await excludedLocalIds(), {local.id});
-      expect((await sut.getSnapshotDeletionCandidates(second)).candidates, isEmpty);
+      expect(await sut.getSnapshotDeletionCandidates(second), isEmpty);
 
       await sut.clearSnapshotAndConsumeExclusions(second);
 
@@ -559,7 +712,7 @@ void main() {
       await sut.consumeExcluded([local.id, 'local-other']);
 
       expect(await excludedLocalIds(), {local.id});
-      expect((await sut.getSnapshotDeletionCandidates(snapshotId)).candidates, isEmpty);
+      expect(await sut.getSnapshotDeletionCandidates(snapshotId), isEmpty);
     });
 
     test('drops the snapshots of syncs that never reached their detection', () async {
@@ -570,14 +723,17 @@ void main() {
 
       await sut.snapshotBackedUpAssets(userId);
 
-      expect((await sut.getSnapshotDeletionCandidates(1)).total, 0);
+      final stale = await ctx.db
+          .customSelect('SELECT COUNT(*) AS c FROM local_deletion_snapshot WHERE snapshot_id = 1')
+          .getSingle();
+      expect(stale.read<int>('c'), 0);
     });
   });
 
   group('getMoveCandidates', () {
     test('returns the unhashed files with the name and type of the deleted remote asset', () async {
       final remote = await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1');
-      await sut.upsert(userId, {remote.id: 'checksum-1'});
+      await sut.upsert(userId, deleted({remote.id: 'checksum-1'}));
       final copy = await ctx.newLocalAsset(name: remote.name, checksumOption: const Option.none());
       await ctx.newLocalAsset(name: remote.name.replaceFirst('.jpg', ' (1).jpg'), checksumOption: const Option.none());
       await ctx.newLocalAsset(name: remote.name);
@@ -593,7 +749,7 @@ void main() {
 
     test('returns nothing for deletions without a same-named file', () async {
       final remote = await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-1');
-      await sut.upsert(userId, {remote.id: 'checksum-1'});
+      await sut.upsert(userId, deleted({remote.id: 'checksum-1'}));
       await ctx.newLocalAsset(name: 'other.jpg', checksumOption: const Option.none());
 
       expect(await sut.getMoveCandidates([remote.id]), isEmpty);
@@ -609,12 +765,15 @@ void main() {
       await ctx.newRemoteExif(assetId: image.id, fileSize: 1234);
       await ctx.newRemoteExif(assetId: video.id, fileSize: 5678);
       await ctx.newRemoteExif(assetId: unknownSize.id);
-      await sut.upsert(userId, {
-        image.id: 'checksum-1',
-        video.id: 'checksum-2',
-        unknownSize.id: 'checksum-3',
-        noExif.id: 'checksum-4',
-      });
+      await sut.upsert(
+        userId,
+        deleted({
+          image.id: 'checksum-1',
+          video.id: 'checksum-2',
+          unknownSize.id: 'checksum-3',
+          noExif.id: 'checksum-4',
+        }),
+      );
 
       final result = await sut.getPendingFileSizes([image.id, video.id, unknownSize.id, noExif.id]);
 
@@ -629,7 +788,7 @@ void main() {
       final other = await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-2');
       await ctx.newRemoteExif(assetId: remote.id, fileSize: 1234);
       await ctx.newRemoteExif(assetId: other.id, fileSize: 1234);
-      await sut.upsert(userId, {remote.id: 'checksum-1', other.id: 'checksum-2'});
+      await sut.upsert(userId, deleted({remote.id: 'checksum-1', other.id: 'checksum-2'}));
 
       expect((await sut.getPendingFileSizes([remote.id])).keys, [remote.id]);
     });
@@ -651,8 +810,8 @@ void main() {
 
   group('clearQueue', () {
     test('removes every queue row but keeps the exclusions', () async {
-      await sut.upsert(userId, {'remote-1': 'checksum-1'});
-      await sut.upsert('other-user', {'remote-2': 'checksum-2'});
+      await sut.upsert(userId, deleted({'remote-1': 'checksum-1'}));
+      await sut.upsert('other-user', deleted({'remote-2': 'checksum-2'}));
       await sut.markExcluded(['local-1']);
 
       await sut.clearQueue();
@@ -664,7 +823,7 @@ void main() {
 
   group('clearPending', () {
     test('removes the pending deletions but keeps the flushed ones', () async {
-      await sut.upsert(userId, {'remote-1': 'checksum-1', 'remote-2': 'checksum-2'});
+      await sut.upsert(userId, deleted({'remote-1': 'checksum-1', 'remote-2': 'checksum-2'}));
       await sut.markTrashed(['remote-2']);
 
       await sut.clearPending();

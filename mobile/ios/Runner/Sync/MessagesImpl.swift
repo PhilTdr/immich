@@ -125,7 +125,8 @@ class NativeSyncApiImpl: ImmichPlugin, NativeSyncApi, FlutterPlugin {
           name: album.localizedTitle ?? album.localIdentifier,
           updatedAt: nil,
           isCloud: isCloud,
-          assetCount: Int64(assets.count)
+          assetCount: Int64(assets.count),
+          isSmart: album.assetCollectionType == .smartAlbum
         )
         
         if let firstAsset = assets.firstObject {

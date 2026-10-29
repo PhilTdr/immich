@@ -356,7 +356,7 @@ open class NativeSyncApiImplBase(context: Context) : ImmichPlugin(), ActivityAwa
         // MediaStore might return null for bucket name (commonly for the Root Directory), so default to "Internal Storage"
         val name = cursor.getStringOrNull(bucketNameColumn) ?: "Internal Storage"
         val updatedAt = cursor.getLong(dateModified)
-        albums.add(PlatformAlbum(id, name, updatedAt, false, 0))
+        albums.add(PlatformAlbum(id, name, updatedAt, false, 0, false))
         albumsCount[id] = 1
       }
     }

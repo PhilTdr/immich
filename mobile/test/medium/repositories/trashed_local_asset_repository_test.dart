@@ -103,7 +103,7 @@ void main() {
       final localId = await addLocalAssetToBackupAlbum(checksum);
       final remote = await ctx.newRemoteAsset(ownerId: userId, checksum: checksum, deletedAt: DateTime(2020, 1, 1));
       final deletions = LocalDeletionRepository(ctx.db);
-      await deletions.upsert(userId, {remote.id: checksum});
+      await deletions.upsert(userId, {remote.id: (checksum: checksum, albumId: null, albumName: null)});
       await deletions.markTrashed([remote.id]);
 
       final result = await sut.getToTrash();

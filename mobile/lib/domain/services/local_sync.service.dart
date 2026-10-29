@@ -22,11 +22,9 @@ import 'package:immich_mobile/utils/diff.dart';
 import 'package:logging/logging.dart';
 
 const String _kSyncCancelledCode = "SYNC_CANCELLED";
-// A sync that finds almost every backed-up library asset gone is treated as a
-// device state change (volume ejected, access revoked, iCloud Photos removed
-// from the device), not as deletions.
-const int _kDeletionGuardMinAssets = 50;
-const double _kDeletionGuardMaxVanishedRatio = 0.9;
+// A sync that finds this many backed-up assets gone holds its deletions until the user confirms them. Removing a whole
+// album, iCloud Photos from the device or a rebuilt media database looks like deletions to the sync
+const int _kDeletionConfirmationMinAssets = 50;
 
 typedef _DeletionSnapshot = ({String ownerId, int id});
 
@@ -95,9 +93,11 @@ class LocalSyncService {
 
       // The Android delta does not report deletions. Snapshot the backed-up assets so the rows that the album
       // reconciliation below removes can be detected afterwards, like in the full sync
-      final snapshot = CurrentPlatform.isAndroid ? await _takeDeletionSnapshot() : null;
+      final snapshot = CurrentPlatform.isAndroid ? await _takeDeletionSnapshot(const []) : null;
 
       final deviceAlbums = await _nativeSyncApi.getAlbums();
+      // The iOS delta queues deletions twice, they await confirmation together
+      final queuedBySync = <String>{};
 
       // Record deletion intents before processDelta removes the local rows, and before updateAll drops the vanished
       // albums that are not selected for backup, whose links tell the assets of iOS shared albums apart.
@@ -106,7 +106,14 @@ class LocalSyncService {
         // The delta also reports the assets of a shared album that left the device
         await _excludeVanishedIosSharedAlbums(deviceAlbums);
       }
-      final excluded = ownerId != null ? await recordLocallyDeletedFromDelta(delta.deletes, ownerId) : const <String>{};
+      final excluded = ownerId != null
+          ? await recordLocallyDeletedFromDelta(
+              delta.deletes,
+              ownerId,
+              smartAlbumIds: _smartAlbumIds(deviceAlbums),
+              queuedBySync: queuedBySync,
+            )
+          : const <String>{};
 
       await _localAlbumRepository.updateAll(deviceAlbums.toLocalAlbums());
       final newAssets = delta.updates.toLocalAssets();
@@ -136,7 +143,7 @@ class LocalSyncService {
 
         // Also when cancelled, as no later sync can detect the rows removed so far
         if (snapshot != null) {
-          await _detectAndQueueDeletionsFromSnapshot(snapshot);
+          await _detectAndQueueDeletionsFromSnapshot(snapshot, queuedBySync);
         }
         if (_isCancelled) {
           return;
@@ -150,7 +157,7 @@ class LocalSyncService {
         // The cloud album sync below removes the rows of assets that left a shared album, so snapshot them when their
         // deletions are synced, like the Android delta
         final cloudSnapshot = cloudAlbums.isNotEmpty && _syncLocalDeletionsInIosSharedAlbums
-            ? await _takeDeletionSnapshot()
+            ? await _takeDeletionSnapshot(deviceAlbums)
             : null;
         for (final album in cloudAlbums) {
           if (_isCancelled) {
@@ -167,7 +174,7 @@ class LocalSyncService {
 
         // Also when cancelled, as no later sync can detect the rows removed so far
         if (cloudSnapshot != null) {
-          await _detectAndQueueDeletionsFromSnapshot(cloudSnapshot);
+          await _detectAndQueueDeletionsFromSnapshot(cloudSnapshot, queuedBySync);
         }
         if (_isCancelled) {
           return;
@@ -194,10 +201,10 @@ class LocalSyncService {
     try {
       final Stopwatch stopwatch = Stopwatch()..start();
 
-      // Snapshot before reconciliation so deletions can be detected afterwards.
-      final snapshot = await _takeDeletionSnapshot();
-
       final deviceAlbums = await _nativeSyncApi.getAlbums();
+      // Snapshot before reconciliation so deletions can be detected afterwards.
+      final snapshot = await _takeDeletionSnapshot(deviceAlbums);
+
       final dbAlbums = await _localAlbumRepository.getAll(sortBy: {SortLocalAlbumsBy.id});
 
       await diffSortedLists(
@@ -210,7 +217,7 @@ class LocalSyncService {
       );
 
       if (snapshot != null) {
-        await _detectAndQueueDeletionsFromSnapshot(snapshot);
+        await _detectAndQueueDeletionsFromSnapshot(snapshot, {});
       }
 
       await _nativeSyncApi.checkpointSync();
@@ -456,7 +463,8 @@ class LocalSyncService {
     return _syncLocalDeletionsEnabled;
   }
 
-  Future<_DeletionSnapshot?> _takeDeletionSnapshot() async {
+  /// Snapshots the backed-up assets with the album each one is listed under among [deviceAlbums]
+  Future<_DeletionSnapshot?> _takeDeletionSnapshot(List<PlatformAlbum> deviceAlbums) async {
     final ownerId = await _deletionSyncOwner();
     if (ownerId == null) {
       return null;
@@ -464,9 +472,15 @@ class LocalSyncService {
     final id = await _localDeletionRepository.snapshotBackedUpAssets(
       ownerId,
       includeIosSharedAlbums: _syncLocalDeletionsInIosSharedAlbums,
+      smartAlbumIds: _smartAlbumIds(deviceAlbums),
     );
     return (ownerId: ownerId, id: id);
   }
+
+  List<String> _smartAlbumIds(List<PlatformAlbum> deviceAlbums) => [
+    for (final album in deviceAlbums)
+      if (album.isSmart) album.id,
+  ];
 
   /// A shared album that leaves the device or empties as a whole (Shared Albums turned off, album left, iCloud signed
   /// out) is a device state change, not removals by its members. Its assets are excluded before their rows go, so
@@ -498,10 +512,9 @@ class LocalSyncService {
   /// Detects deletions from the pre-reconciliation snapshot, re-verifying each
   /// candidate against the device before queuing so hidden or moved assets that
   /// merely lost their local row are not mistaken for deletions.
-  Future<void> _detectAndQueueDeletionsFromSnapshot(_DeletionSnapshot snapshot) async {
-    final result = await _localDeletionRepository.getSnapshotDeletionCandidates(snapshot.id);
+  Future<void> _detectAndQueueDeletionsFromSnapshot(_DeletionSnapshot snapshot, Set<String> queuedBySync) async {
+    final candidates = await _localDeletionRepository.getSnapshotDeletionCandidates(snapshot.id);
     try {
-      final candidates = result.candidates;
       if (candidates.isEmpty) {
         return;
       }
@@ -515,39 +528,58 @@ class LocalSyncService {
         return;
       }
 
-      final vanished = gone.where((c) => !c.inIosSharedAlbum).length;
-      if (_isMassVanish(vanished, result.total)) {
-        _log.warning("Skipping deletion sync: $vanished of ${result.total} backed-up assets vanished at once");
-        return;
-      }
-
       if (!await _stillEnabled()) {
         return;
       }
       // Turning the shared album option off drops the pending deletions, so the copies in shared albums are left out
       final includeIosSharedAlbums = _syncLocalDeletionsInIosSharedAlbums;
-      await _localDeletionRepository.upsert(snapshot.ownerId, {
+      await _queueDeletions(snapshot.ownerId, {
         for (final c in gone)
-          if (includeIosSharedAlbums || !c.inIosSharedAlbum) c.remoteId: c.checksum,
-      });
+          if (includeIosSharedAlbums || !c.inIosSharedAlbum)
+            c.remoteId: (checksum: c.checksum, albumId: c.albumId, albumName: c.albumName),
+      }, queuedBySync);
     } finally {
       await _localDeletionRepository.clearSnapshotAndConsumeExclusions(snapshot.id);
     }
   }
 
-  /// Both counts leave out the copies in iOS shared albums, which stay on the device or leave it with their album, so
-  /// they do not water down the share of the library that vanished
-  bool _isMassVanish(int vanished, int total) =>
-      total >= _kDeletionGuardMinAssets && vanished > total * _kDeletionGuardMaxVanishedRatio;
+  /// Queues [deletions] of the running sync, which already queued [queuedBySync]. Once the sync reaches
+  /// [_kDeletionConfirmationMinAssets], all of its deletions await the user's confirmation, and so does every later
+  /// one until the user confirmed or discarded them
+  Future<void> _queueDeletions(String ownerId, Map<String, DeletedAsset> deletions, Set<String> queuedBySync) async {
+    if (deletions.isEmpty) {
+      return;
+    }
+
+    final queuedBefore = queuedBySync.toSet();
+    queuedBySync.addAll(deletions.keys);
+    final reachedNow =
+        queuedBefore.length < _kDeletionConfirmationMinAssets && queuedBySync.length >= _kDeletionConfirmationMinAssets;
+    final awaitingConfirmation =
+        queuedBySync.length >= _kDeletionConfirmationMinAssets ||
+        await _localDeletionRepository.hasAwaitingConfirmation(ownerId);
+    if (reachedNow) {
+      _log.warning("${queuedBySync.length} backed-up assets vanished at once. Holding them for confirmation");
+    }
+    await _localDeletionRepository.upsert(ownerId, deletions, awaitingConfirmation: awaitingConfirmation);
+    if (reachedNow && queuedBefore.isNotEmpty) {
+      await _localDeletionRepository.holdForConfirmation(queuedBefore);
+    }
+  }
 
   /// Queues the backed-up assets among [deletedIds] for a server move-to-trash,
-  /// unless the setting was turned off meanwhile or almost every backed-up
-  /// asset of the library is among them, and returns the app-initiated
+  /// unless the setting was turned off meanwhile, and returns the app-initiated
   /// deletions that were skipped. Callers must
   /// [LocalDeletionRepository.consumeExcluded] those once the local rows
-  /// are gone.
+  /// are gone. [queuedBySync] holds the deletions that the running sync
+  /// queued so far, see [_queueDeletions]
   @visibleForTesting
-  Future<Set<String>> recordLocallyDeletedFromDelta(List<String> deletedIds, String ownerId) async {
+  Future<Set<String>> recordLocallyDeletedFromDelta(
+    List<String> deletedIds,
+    String ownerId, {
+    Iterable<String> smartAlbumIds = const [],
+    Set<String>? queuedBySync,
+  }) async {
     if (deletedIds.isEmpty) {
       return const {};
     }
@@ -567,27 +599,16 @@ class LocalSyncService {
       ownerId,
       ids,
       includeIosSharedAlbums: includeIosSharedAlbums,
+      smartAlbumIds: smartAlbumIds,
     );
-    // Everyday deletions are too few to trip the guard, so they skip the counts
-    if (backedUp.length > _kDeletionGuardMinAssets * _kDeletionGuardMaxVanishedRatio) {
-      // Without the copies in iOS shared albums, see [_isMassVanish]
-      final vanished = includeIosSharedAlbums
-          ? (await _localDeletionRepository.getBackedUp(ownerId, ids)).length
-          : backedUp.length;
-      final total = await _localDeletionRepository.countBackedUp(ownerId);
-      if (_isMassVanish(vanished, total)) {
-        _log.warning("Skipping deletion sync: $vanished of $total backed-up assets vanished at once");
-        return excluded;
-      }
-    }
     if (!await _stillEnabled()) {
       return excluded;
     }
     // Turning the shared album option off drops the pending deletions, so the copies in shared albums are left out
     if (includeIosSharedAlbums && !_syncLocalDeletionsInIosSharedAlbums) {
-      backedUp = await _localDeletionRepository.getBackedUp(ownerId, ids);
+      backedUp = await _localDeletionRepository.getBackedUp(ownerId, ids, smartAlbumIds: smartAlbumIds);
     }
-    await _localDeletionRepository.upsert(ownerId, backedUp);
+    await _queueDeletions(ownerId, backedUp, queuedBySync ?? {});
     return excluded;
   }
 

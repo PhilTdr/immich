@@ -70,6 +70,7 @@ void main() {
       () => mocks.localDeletion.repo.getPending(any(), settledBefore: any(named: 'settledBefore')),
     ).thenAnswer((_) async => []);
     when(() => mocks.localDeletion.repo.deleteByRemoteIds(any())).thenAnswer((_) async {});
+    when(() => mocks.localDeletion.repo.hasAwaitingConfirmation(any())).thenAnswer((_) async => false);
     when(
       () => services.serverInfo.getServerFeatures(),
     ).thenAnswer((_) async => const ServerFeatures(trash: true, map: false, oauthEnabled: false, passwordLogin: true));
@@ -77,6 +78,74 @@ void main() {
 
   group('LocalDeletionFlushService', () {
     group('flushPendingDeletions', () {
+      group('while deletions await confirmation', () {
+        setUp(() {
+          when(() => mocks.localDeletion.repo.hasAwaitingConfirmation(any())).thenAnswer((_) async => true);
+          when(
+            () => mocks.localDeletion.repo.getPending(any(), settledBefore: any(named: 'settledBefore')),
+          ).thenAnswer((_) async => ['remote-1']);
+        });
+
+        test('moves nothing to the server trash', () async {
+          await sut.flushPendingDeletions('owner-1');
+
+          verify(() => mocks.localDeletion.repo.hasAwaitingConfirmation('owner-1')).called(1);
+          verifyNever(() => mocks.localDeletion.repo.getPending(any(), settledBefore: any(named: 'settledBefore')));
+          verifyNever(() => services.asset.service.trash(any()));
+        });
+
+        test('still prunes the queue and restores returned assets, so they leave the confirmation', () async {
+          when(() => mocks.localDeletion.repo.getRestored(any())).thenAnswer((_) async => ['remote-restored']);
+          when(() => services.asset.service.restoreTrash(any())).thenAnswer((_) async {});
+
+          await sut.flushPendingDeletions('owner-1');
+
+          verifyInOrder([
+            () => mocks.localDeletion.repo.pruneFlushed(),
+            () => services.asset.service.restoreTrash(['remote-restored']),
+            () => mocks.localDeletion.repo.pruneAlreadyTrashed(),
+            () => mocks.localDeletion.repo.pruneRestored('owner-1'),
+            () => mocks.localDeletion.repo.hasAwaitingConfirmation('owner-1'),
+          ]);
+        });
+      });
+
+      test('stops before the next chunk when a sync holds deletions for confirmation meanwhile', () async {
+        when(
+          () => mocks.localDeletion.repo.getPending(any(), settledBefore: any(named: 'settledBefore')),
+        ).thenAnswer((_) async => [for (int i = 0; i < 1500; i++) 'remote-$i']);
+        var held = false;
+        when(() => mocks.localDeletion.repo.hasAwaitingConfirmation(any())).thenAnswer((_) async => held);
+        when(() => services.asset.service.trash(any())).thenAnswer((_) async {
+          held = true;
+        });
+
+        await sut.flushPendingDeletions('owner-1');
+
+        verify(() => services.asset.service.trash(any())).called(1);
+        verify(() => mocks.localDeletion.repo.markTrashed(any(that: hasLength(1000)))).called(1);
+      });
+
+      test('stops sending one at a time when a sync holds deletions for confirmation meanwhile', () async {
+        when(
+          () => mocks.localDeletion.repo.getPending(any(), settledBefore: any(named: 'settledBefore')),
+        ).thenAnswer((_) async => ['remote-dead', 'remote-2', 'remote-3']);
+        var held = false;
+        when(() => mocks.localDeletion.repo.hasAwaitingConfirmation(any())).thenAnswer((_) async => held);
+        when(() => services.asset.service.trash(any())).thenAnswer((invocation) async {
+          final ids = invocation.positionalArguments.first as List<String>;
+          if (ids.length > 1 || ids.single == 'remote-dead') {
+            throw ApiException(400, 'Not found or no asset.delete access');
+          }
+          held = true;
+        });
+
+        await sut.flushPendingDeletions('owner-1');
+
+        verify(() => services.asset.service.trash(['remote-2'])).called(1);
+        verifyNever(() => services.asset.service.trash(['remote-3']));
+      });
+
       test('moves pending deletions to the server trash and keeps their queue rows as flushed', () async {
         when(
           () => mocks.localDeletion.repo.getPending(any(), settledBefore: any(named: 'settledBefore')),

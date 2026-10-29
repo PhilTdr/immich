@@ -18,6 +18,15 @@ class LocalDeletionEntity extends Table with DriftDefaultsMixin {
 
   DateTimeColumn get trashedAt => customType(clampedDateTime).nullable()();
 
+  /// The album that the deleted asset is listed under while it awaits confirmation
+  TextColumn get albumId => text().nullable()();
+
+  TextColumn get albumName => text().nullable()();
+
+  /// Set when the sync found too many deletions at once. No deletion is moved to the server trash until the user
+  /// confirmed or discarded these
+  BoolColumn get awaitingConfirmation => boolean().withDefault(const Constant(false))();
+
   @override
   Set<Column> get primaryKey => {remoteId};
 }

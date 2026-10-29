@@ -546,11 +546,18 @@ class _PendingDeletionsCard extends ConsumerWidget {
       return const SizedBox.shrink();
     }
 
-    final pendingCount = ref.watch(pendingDeletionsProvider.select((p) => p.valueOrNull?.length ?? 0));
+    final (pendingCount, awaitingCount) = ref.watch(
+      pendingDeletionsProvider.select((p) {
+        final pending = p.valueOrNull ?? const [];
+        return (pending.length, pending.where((d) => d.awaitingConfirmation).length);
+      }),
+    );
 
     return BackupInfoCard(
       title: context.t.backup_controller_page_deletions,
-      subtitle: context.t.backup_controller_page_deletions_sub,
+      subtitle: awaitingCount > 0
+          ? context.t.backup_controller_page_deletions_awaiting_sub(count: awaitingCount)
+          : context.t.backup_controller_page_deletions_sub,
       info: pendingCount.toString(),
       onTap: () => context.pushRoute(const BackupPendingDeletionRoute()),
     );

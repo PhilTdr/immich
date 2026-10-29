@@ -3095,6 +3095,40 @@
             "default_dart": null,
             "default_client_dart": null,
             "dsl_features": []
+          },
+          {
+            "name": "album_id",
+            "getter_name": "albumId",
+            "moor_type": "string",
+            "nullable": true,
+            "customConstraints": null,
+            "default_dart": null,
+            "default_client_dart": null,
+            "dsl_features": []
+          },
+          {
+            "name": "album_name",
+            "getter_name": "albumName",
+            "moor_type": "string",
+            "nullable": true,
+            "customConstraints": null,
+            "default_dart": null,
+            "default_client_dart": null,
+            "dsl_features": []
+          },
+          {
+            "name": "awaiting_confirmation",
+            "getter_name": "awaitingConfirmation",
+            "moor_type": "bool",
+            "nullable": false,
+            "customConstraints": null,
+            "defaultConstraints": "CHECK (\"awaiting_confirmation\" IN (0, 1))",
+            "dialectAwareDefaultConstraints": {
+              "sqlite": "CHECK (\"awaiting_confirmation\" IN (0, 1))"
+            },
+            "default_dart": "const CustomExpression('0')",
+            "default_client_dart": null,
+            "dsl_features": []
           }
         ],
         "is_virtual": false,
@@ -3647,7 +3681,7 @@
       "sql": [
         {
           "dialect": "sqlite",
-          "sql": "CREATE TABLE IF NOT EXISTS \"local_deletion_entity\" (\"remote_id\" TEXT NOT NULL, \"checksum\" TEXT NOT NULL, \"owner_id\" TEXT NOT NULL, \"created_at\" TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP), \"trashed_at\" TEXT NULL, PRIMARY KEY (\"remote_id\")) WITHOUT ROWID, STRICT;"
+          "sql": "CREATE TABLE IF NOT EXISTS \"local_deletion_entity\" (\"remote_id\" TEXT NOT NULL, \"checksum\" TEXT NOT NULL, \"owner_id\" TEXT NOT NULL, \"created_at\" TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP), \"trashed_at\" TEXT NULL, \"album_id\" TEXT NULL, \"album_name\" TEXT NULL, \"awaiting_confirmation\" INTEGER NOT NULL DEFAULT 0 CHECK (\"awaiting_confirmation\" IN (0, 1)), PRIMARY KEY (\"remote_id\")) WITHOUT ROWID, STRICT;"
         }
       ]
     },

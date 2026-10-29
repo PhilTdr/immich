@@ -64,12 +64,16 @@ class PlatformAlbum {
   final bool isCloud;
   final int assetCount;
 
+  // iOS smart albums, e.g. Recents or Selfies, which Photos fills by itself
+  final bool isSmart;
+
   const PlatformAlbum({
     required this.id,
     required this.name,
     this.updatedAt,
     this.isCloud = false,
     this.assetCount = 0,
+    this.isSmart = false,
   });
 }
 

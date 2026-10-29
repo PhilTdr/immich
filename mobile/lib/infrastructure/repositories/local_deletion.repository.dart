@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:math';
 
 import 'package:collection/collection.dart';
@@ -16,8 +17,47 @@ const _kIosSharedAlbumAssetIds = '''
   WHERE al.is_ios_shared_album = 1
 ''';
 
-typedef PendingDeletion = ({String remoteId, String? name, String? thumbHash, DateTime createdAt});
-typedef SnapshotCandidate = ({String localId, String remoteId, String checksum, bool inIosSharedAlbum});
+/// The album of each local asset that matches [assetFilter], see [LocalDeletionRepository.getBackedUp]. The first
+/// variable is the JSON array of the smart album ids
+String _listingAlbumsSql(String assetFilter) =>
+    '''
+  SELECT asset_id, album_id, album_name FROM (
+    SELECT laa.asset_id AS asset_id, laa.album_id AS album_id, al.name AS album_name, ROW_NUMBER() OVER (
+      PARTITION BY laa.asset_id
+      ORDER BY smart.value IS NOT NULL,
+        CASE WHEN smart.value IS NULL THEN album_size.c ELSE -album_size.c END,
+        laa.album_id
+    ) AS pos
+    FROM local_album_asset_entity laa
+    INNER JOIN local_album_entity al ON al.id = laa.album_id
+    INNER JOIN (SELECT album_id, COUNT(*) AS c FROM local_album_asset_entity GROUP BY album_id) album_size
+      ON album_size.album_id = laa.album_id
+    LEFT JOIN json_each(?) smart ON smart.value = laa.album_id
+    WHERE $assetFilter
+  ) WHERE pos = 1
+''';
+
+typedef PendingDeletion = ({
+  String remoteId,
+  String? name,
+  String? thumbHash,
+  DateTime createdAt,
+  String? albumId,
+  String? albumName,
+  bool awaitingConfirmation,
+});
+typedef SnapshotCandidate = ({
+  String localId,
+  String remoteId,
+  String checksum,
+  bool inIosSharedAlbum,
+  String? albumId,
+  String? albumName,
+});
+
+/// A deletion to queue, by remote id: the checksum of the deleted file and the album it is listed under, see
+/// [LocalDeletionRepository.getBackedUp]
+typedef DeletedAsset = ({String checksum, String? albumId, String? albumName});
 
 @DriftAccessor()
 class LocalDeletionRepository extends DatabaseAccessor<Drift> with $LocalDeletionRepositoryMixin {
@@ -25,62 +65,83 @@ class LocalDeletionRepository extends DatabaseAccessor<Drift> with $LocalDeletio
 
   Drift get _db => attachedDatabase;
 
-  /// Queues [remoteIdToChecksum] as deletions of [ownerId] pending a server move-to-trash. A flushed deletion of the
-  /// same asset is replaced, so a file that came back and was deleted again settles anew
-  Future<void> upsert(String ownerId, Map<String, String> remoteIdToChecksum) async {
-    if (remoteIdToChecksum.isEmpty) {
+  /// Queues [deletions] of [ownerId] pending a server move-to-trash. A flushed deletion of the same asset is replaced,
+  /// so a file that came back and was deleted again settles anew
+  Future<void> upsert(String ownerId, Map<String, DeletedAsset> deletions, {bool awaitingConfirmation = false}) async {
+    if (deletions.isEmpty) {
       return;
     }
 
     await _db.batch((batch) {
-      for (final slice in remoteIdToChecksum.keys.slices(kDriftMaxChunk)) {
+      for (final slice in deletions.keys.slices(kDriftMaxChunk)) {
         batch.deleteWhere(_db.localDeletionEntity, (row) => row.remoteId.isIn(slice) & row.trashedAt.isNotNull());
       }
-      for (final entry in remoteIdToChecksum.entries) {
+      for (final MapEntry(key: remoteId, value: deleted) in deletions.entries) {
         final companion = LocalDeletionEntityCompanion.insert(
-          remoteId: entry.key,
-          checksum: entry.value,
+          remoteId: remoteId,
+          checksum: deleted.checksum,
           ownerId: ownerId,
+          albumId: Value(deleted.albumId),
+          albumName: Value(deleted.albumName),
+          awaitingConfirmation: Value(awaitingConfirmation),
         );
         batch.insert(_db.localDeletionEntity, companion, onConflict: DoUpdate((_) => companion));
       }
     });
   }
 
-  /// The remote id and checksum of the backed-up copies of [localIds]: the user's own uploads that are not trashed,
-  /// hidden or locked, never partner or external library assets that share a checksum. Like free up space, assets of
-  /// iOS shared albums are left out unless [includeIosSharedAlbums], they also vanish when another member removes them
-  /// from the album
-  Future<Map<String, String>> getBackedUp(
+  /// The backed-up copies of [localIds] by remote id: the user's own uploads that are not trashed, hidden or locked,
+  /// never partner or external library assets that share a checksum. Like free up space, assets of iOS shared albums
+  /// are left out unless [includeIosSharedAlbums], they also vanish when another member removes them from the album.
+  /// Each one is listed under the smallest album it is in, so an album deleted as a whole shows by its name. Assets
+  /// that are only in [smartAlbumIds] go to the largest of these, which is Recents on iOS
+  Future<Map<String, DeletedAsset>> getBackedUp(
     String ownerId,
     Iterable<String> localIds, {
     bool includeIosSharedAlbums = false,
+    Iterable<String> smartAlbumIds = const [],
   }) async {
-    final result = <String, String>{};
+    final result = <String, DeletedAsset>{};
     for (final slice in localIds.toSet().slices(kDriftMaxChunk)) {
       final query = _db.localAssetEntity.selectOnly()
-        ..addColumns([_db.remoteAssetEntity.id, _db.remoteAssetEntity.checksum])
+        ..addColumns([_db.localAssetEntity.id, _db.remoteAssetEntity.id, _db.remoteAssetEntity.checksum])
         ..join([_backedUpCopy(ownerId)])
         ..where(_db.localAssetEntity.id.isIn(slice));
       if (!includeIosSharedAlbums) {
         query.where(_db.localAssetEntity.id.isNotInQuery(_iosSharedAlbumAssets()));
       }
-      for (final row in await query.get()) {
-        result[row.read(_db.remoteAssetEntity.id)!] = row.read(_db.remoteAssetEntity.checksum)!;
+      final rows = await query.get();
+      final albums = await _getListingAlbums(rows.map((row) => row.read(_db.localAssetEntity.id)!), smartAlbumIds);
+      for (final row in rows) {
+        final album = albums[row.read(_db.localAssetEntity.id)!];
+        result[row.read(_db.remoteAssetEntity.id)!] = (
+          checksum: row.read(_db.remoteAssetEntity.checksum)!,
+          albumId: album?.id,
+          albumName: album?.name,
+        );
       }
     }
     return result;
   }
 
-  /// The number of backed-up copies of all local assets outside iOS shared albums, as in [getBackedUp], so the caller
-  /// can tell the whole library disappearing apart from deletions
-  Future<int> countBackedUp(String ownerId) {
-    final count = _db.remoteAssetEntity.id.count(distinct: true);
-    final query = _db.localAssetEntity.selectOnly()
-      ..addColumns([count])
-      ..join([_backedUpCopy(ownerId)])
-      ..where(_db.localAssetEntity.id.isNotInQuery(_iosSharedAlbumAssets()));
-    return query.map((row) => row.read(count)!).getSingle();
+  /// The album that each of [localIds] is listed under, see [getBackedUp]
+  Future<Map<String, ({String id, String name})>> _getListingAlbums(
+    Iterable<String> localIds,
+    Iterable<String> smartAlbumIds,
+  ) async {
+    final rows = await _db
+        .customSelect(
+          _listingAlbumsSql('laa.asset_id IN (SELECT value FROM json_each(?))'),
+          variables: [
+            Variable.withString(jsonEncode(smartAlbumIds.toList())),
+            Variable.withString(jsonEncode(localIds.toList())),
+          ],
+        )
+        .get();
+    return {
+      for (final row in rows)
+        row.read<String>('asset_id'): (id: row.read<String>('album_id'), name: row.read<String>('album_name')),
+    };
   }
 
   Join _backedUpCopy(String ownerId) => innerJoin(
@@ -104,13 +165,14 @@ class LocalDeletionRepository extends DatabaseAccessor<Drift> with $LocalDeletio
     ])
     ..where(_db.localAlbumEntity.isIosSharedAlbum.equals(true));
 
-  /// The remote ids of the intents of [ownerId] that were queued before [settledBefore]
+  /// The remote ids of the intents of [ownerId] that were queued before [settledBefore] and do not await confirmation
   Future<List<String>> getPending(String ownerId, {required DateTime settledBefore}) {
     final query = _db.localDeletionEntity.selectOnly()
       ..addColumns([_db.localDeletionEntity.remoteId])
       ..where(
         _db.localDeletionEntity.ownerId.equals(ownerId) &
             _db.localDeletionEntity.trashedAt.isNull() &
+            _db.localDeletionEntity.awaitingConfirmation.equals(false) &
             _db.localDeletionEntity.createdAt.isSmallerThanValue(settledBefore),
       );
     return query.map((row) => row.read(_db.localDeletionEntity.remoteId)!).get();
@@ -121,7 +183,15 @@ class LocalDeletionRepository extends DatabaseAccessor<Drift> with $LocalDeletio
     final deletion = _db.localDeletionEntity;
     final remote = _db.remoteAssetEntity;
     final query = _db.selectOnly(deletion).join([leftOuterJoin(remote, remote.id.equalsExp(deletion.remoteId))])
-      ..addColumns([deletion.remoteId, deletion.createdAt, remote.name, remote.thumbHash])
+      ..addColumns([
+        deletion.remoteId,
+        deletion.createdAt,
+        deletion.albumId,
+        deletion.albumName,
+        deletion.awaitingConfirmation,
+        remote.name,
+        remote.thumbHash,
+      ])
       ..where(deletion.ownerId.equals(ownerId) & deletion.trashedAt.isNull())
       ..orderBy([OrderingTerm.asc(deletion.createdAt)]);
     return query
@@ -131,9 +201,48 @@ class LocalDeletionRepository extends DatabaseAccessor<Drift> with $LocalDeletio
             name: row.read(remote.name),
             thumbHash: row.read(remote.thumbHash),
             createdAt: row.read(deletion.createdAt)!,
+            albumId: row.read(deletion.albumId),
+            albumName: row.read(deletion.albumName),
+            awaitingConfirmation: row.read(deletion.awaitingConfirmation)!,
           ),
         )
         .watch();
+  }
+
+  /// Whether deletions of [ownerId] await the user's confirmation, which holds back the whole queue
+  Future<bool> hasAwaitingConfirmation(String ownerId) {
+    final query = _db.localDeletionEntity.selectOnly()
+      ..addColumns([_db.localDeletionEntity.remoteId])
+      ..where(
+        _db.localDeletionEntity.ownerId.equals(ownerId) &
+            _db.localDeletionEntity.trashedAt.isNull() &
+            _db.localDeletionEntity.awaitingConfirmation.equals(true),
+      )
+      ..limit(1);
+    return query.get().then((rows) => rows.isNotEmpty);
+  }
+
+  /// Makes the pending deletions among [remoteIds] await the user's confirmation
+  Future<void> holdForConfirmation(Iterable<String> remoteIds) =>
+      _setAwaitingConfirmation(remoteIds, awaitingConfirmation: true);
+
+  /// Releases the deletions among [remoteIds] that await confirmation to the server trash
+  Future<void> confirm(Iterable<String> remoteIds) => _setAwaitingConfirmation(remoteIds, awaitingConfirmation: false);
+
+  Future<void> _setAwaitingConfirmation(Iterable<String> remoteIds, {required bool awaitingConfirmation}) async {
+    for (final slice in remoteIds.toSet().slices(kDriftMaxChunk)) {
+      await (_db.update(_db.localDeletionEntity)..where((row) => row.remoteId.isIn(slice) & row.trashedAt.isNull()))
+          .write(LocalDeletionEntityCompanion(awaitingConfirmation: Value(awaitingConfirmation)));
+    }
+  }
+
+  /// Drops the deletions among [remoteIds] that await confirmation, so their server copies are kept
+  Future<void> discard(Iterable<String> remoteIds) async {
+    for (final slice in remoteIds.toSet().slices(kDriftMaxChunk)) {
+      await (_db.delete(_db.localDeletionEntity)
+            ..where((row) => row.remoteId.isIn(slice) & row.trashedAt.isNull() & row.awaitingConfirmation.equals(true)))
+          .go();
+    }
   }
 
   Future<void> deleteByRemoteIds(Iterable<String> remoteIds) async {
@@ -356,10 +465,14 @@ class LocalDeletionRepository extends DatabaseAccessor<Drift> with $LocalDeletio
     return result;
   }
 
-  /// Captures the backed-up assets of [ownerId], as in [getBackedUp], into a temp table, so deletions can be
-  /// detected after the reconciliation removed their rows. Every engine shares the connection, so each sync gets its
-  /// own snapshot id
-  Future<int> snapshotBackedUpAssets(String ownerId, {bool includeIosSharedAlbums = false}) {
+  /// Captures the backed-up assets of [ownerId] with their album, as in [getBackedUp], into a temp table, so deletions
+  /// can be detected after the reconciliation removed their rows. Every engine shares the connection, so each sync gets
+  /// its own snapshot id
+  Future<int> snapshotBackedUpAssets(
+    String ownerId, {
+    bool includeIosSharedAlbums = false,
+    Iterable<String> smartAlbumIds = const [],
+  }) {
     return _db.transaction(() async {
       await _createSnapshotTable();
       // The id is the creation time, so the snapshots of syncs that never reached their detection expire
@@ -373,16 +486,20 @@ class LocalDeletionRepository extends DatabaseAccessor<Drift> with $LocalDeletio
       final snapshotId = max(now, last.read<int>('id') + 1);
       await _db.customStatement(
         '''
-        INSERT INTO local_deletion_snapshot (snapshot_id, local_id, remote_id, checksum, in_ios_shared_album)
-        SELECT ?, la.id, ra.id, la.checksum, la.id IN ($_kIosSharedAlbumAssetIds)
+        INSERT INTO local_deletion_snapshot
+          (snapshot_id, local_id, remote_id, checksum, in_ios_shared_album, album_id, album_name)
+        SELECT ?, la.id, ra.id, la.checksum, la.id IN ($_kIosSharedAlbumAssetIds), listing.album_id, listing.album_name
         FROM local_asset_entity la
         INNER JOIN remote_asset_entity ra ON ra.checksum = la.checksum
+        LEFT JOIN (${_listingAlbumsSql('laa.asset_id IN (SELECT id FROM local_asset_entity WHERE checksum IS NOT NULL)')})
+          listing ON listing.asset_id = la.id
         WHERE ra.owner_id = ? AND ra.deleted_at IS NULL AND ra.library_id IS NULL
           AND ra.visibility NOT IN (?, ?)
           AND (? OR la.id NOT IN ($_kIosSharedAlbumAssetIds))
       ''',
         [
           snapshotId,
+          jsonEncode(smartAlbumIds.toList()),
           ownerId,
           AssetVisibility.hidden.index,
           AssetVisibility.locked.index,
@@ -393,16 +510,15 @@ class LocalDeletionRepository extends DatabaseAccessor<Drift> with $LocalDeletio
     });
   }
 
-  /// The rows of [snapshotId] whose local asset is gone and that are not excluded, with the number of rows outside iOS
-  /// shared albums so the caller can tell the library or a whole volume disappearing apart from deletions
-  Future<({List<SnapshotCandidate> candidates, int total})> getSnapshotDeletionCandidates(int snapshotId) {
+  /// The rows of [snapshotId] whose local asset is gone and that are not excluded
+  Future<List<SnapshotCandidate>> getSnapshotDeletionCandidates(int snapshotId) {
     return _db.transaction(() async {
       await _createSnapshotTable();
       final rows = await _db
           .customSelect(
             '''
         SELECT s.local_id AS local_id, s.remote_id AS remote_id, s.checksum AS checksum,
-          s.in_ios_shared_album AS in_ios_shared_album
+          s.in_ios_shared_album AS in_ios_shared_album, s.album_id AS album_id, s.album_name AS album_name
         FROM local_deletion_snapshot s
         WHERE s.snapshot_id = ?
           AND NOT EXISTS (SELECT 1 FROM local_asset_entity la WHERE la.id = s.local_id)
@@ -411,23 +527,18 @@ class LocalDeletionRepository extends DatabaseAccessor<Drift> with $LocalDeletio
             variables: [Variable.withInt(snapshotId)],
           )
           .get();
-      final total = await _db
-          .customSelect(
-            'SELECT COUNT(*) AS c FROM local_deletion_snapshot WHERE snapshot_id = ? AND in_ios_shared_album = 0',
-            variables: [Variable.withInt(snapshotId)],
-          )
-          .getSingle();
-      final candidates = rows
+      return rows
           .map(
             (r) => (
               localId: r.read<String>('local_id'),
               remoteId: r.read<String>('remote_id'),
               checksum: r.read<String>('checksum'),
               inIosSharedAlbum: r.read<bool>('in_ios_shared_album'),
+              albumId: r.read<String?>('album_id'),
+              albumName: r.read<String?>('album_name'),
             ),
           )
           .toList();
-      return (candidates: candidates, total: total.read<int>('c'));
     });
   }
 
@@ -450,7 +561,7 @@ class LocalDeletionRepository extends DatabaseAccessor<Drift> with $LocalDeletio
     return _db.customStatement(
       'CREATE TEMP TABLE IF NOT EXISTS local_deletion_snapshot (snapshot_id INTEGER NOT NULL, '
       'local_id TEXT NOT NULL, remote_id TEXT NOT NULL, checksum TEXT NOT NULL, in_ios_shared_album INTEGER NOT NULL, '
-      'PRIMARY KEY (snapshot_id, local_id))',
+      'album_id TEXT, album_name TEXT, PRIMARY KEY (snapshot_id, local_id))',
     );
   }
 

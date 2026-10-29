@@ -93,18 +93,23 @@ void main() {
     await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletions, false);
     await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletionsInIosSharedAlbums, false);
     await Store.put(StoreKey.currentUser, UserStub.admin);
-    when(() => mockLocalDeletionRepository.upsert(any(), any())).thenAnswer((_) async {});
+    when(
+      () => mockLocalDeletionRepository.upsert(any(), any(), awaitingConfirmation: any(named: 'awaitingConfirmation')),
+    ).thenAnswer((_) async {});
+    when(() => mockLocalDeletionRepository.hasAwaitingConfirmation(any())).thenAnswer((_) async => false);
+    when(() => mockLocalDeletionRepository.holdForConfirmation(any())).thenAnswer((_) async {});
     when(() => mockLocalDeletionRepository.getExcluded(any())).thenAnswer((_) async => <String>{});
     when(() => mockLocalDeletionRepository.consumeExcluded(any())).thenAnswer((_) async {});
     when(
       () => mockLocalDeletionRepository.snapshotBackedUpAssets(
         any(),
         includeIosSharedAlbums: any(named: 'includeIosSharedAlbums'),
+        smartAlbumIds: any(named: 'smartAlbumIds'),
       ),
     ).thenAnswer((_) async => 1);
     when(
       () => mockLocalDeletionRepository.getSnapshotDeletionCandidates(any()),
-    ).thenAnswer((_) async => (candidates: <SnapshotCandidate>[], total: 0));
+    ).thenAnswer((_) async => <SnapshotCandidate>[]);
     when(() => mockLocalDeletionRepository.clearSnapshotAndConsumeExclusions(any())).thenAnswer((_) async {});
     when(() => mockNativeSyncApi.getExistingAssetIds(any())).thenAnswer((_) async => <String>[]);
     when(
@@ -112,6 +117,7 @@ void main() {
         any(),
         any(),
         includeIosSharedAlbums: any(named: 'includeIosSharedAlbums'),
+        smartAlbumIds: any(named: 'smartAlbumIds'),
       ),
     ).thenAnswer((_) async => {});
 
@@ -281,18 +287,43 @@ void main() {
   });
 
   List<String> localIds(int count) => [for (int i = 0; i < count; i++) 'local-$i'];
-  Map<String, String> backedUp(int count) => {for (int i = 0; i < count; i++) 'remote-$i': 'checksum-$i'};
+  Map<String, DeletedAsset> deleted(Map<String, String> checksums) => {
+    for (final MapEntry(key: remoteId, value: checksum) in checksums.entries)
+      remoteId: (checksum: checksum, albumId: 'album-1', albumName: 'Camera'),
+  };
+  Map<String, DeletedAsset> backedUp(int count, {int from = 0}) =>
+      deleted({for (int i = from; i < from + count; i++) 'remote-$i': 'checksum-$i'});
+  List<SnapshotCandidate> snapshotCandidates(int count, {int from = 0, int sharedFrom = -1}) => [
+    for (int i = from; i < from + count; i++)
+      (
+        localId: 'local-$i',
+        remoteId: 'remote-$i',
+        checksum: 'checksum-$i',
+        inIosSharedAlbum: sharedFrom >= 0 && i >= sharedFrom,
+        albumId: 'album-1',
+        albumName: 'Camera',
+      ),
+  ];
 
-  // [vanished] of the [total] backed-up library assets are among the deletions, plus [shared] backed-up copies in iOS
-  // shared albums, which only count when those are included
-  void stubBackedUp(int vanished, {required int total, int shared = 0}) {
+  // [library] backed-up library assets are among the deletions, plus [shared] backed-up copies in iOS shared albums,
+  // which only count when those are included
+  void stubBackedUp(int library, {int shared = 0}) {
     when(
-      () => mockLocalDeletionRepository.getBackedUp(any(), any(), includeIosSharedAlbums: false),
-    ).thenAnswer((_) async => backedUp(vanished));
+      () => mockLocalDeletionRepository.getBackedUp(
+        any(),
+        any(),
+        includeIosSharedAlbums: false,
+        smartAlbumIds: any(named: 'smartAlbumIds'),
+      ),
+    ).thenAnswer((_) async => backedUp(library));
     when(
-      () => mockLocalDeletionRepository.getBackedUp(any(), any(), includeIosSharedAlbums: true),
-    ).thenAnswer((_) async => backedUp(vanished + shared));
-    when(() => mockLocalDeletionRepository.countBackedUp(any())).thenAnswer((_) async => total);
+      () => mockLocalDeletionRepository.getBackedUp(
+        any(),
+        any(),
+        includeIosSharedAlbums: true,
+        smartAlbumIds: any(named: 'smartAlbumIds'),
+      ),
+    ).thenAnswer((_) async => backedUp(library + shared));
   }
 
   // The settings page runs in the main isolate, the sync in a worker isolate whose cached settings do not see the change
@@ -322,13 +353,18 @@ void main() {
           any(),
           any(),
           includeIosSharedAlbums: any(named: 'includeIosSharedAlbums'),
+          smartAlbumIds: any(named: 'smartAlbumIds'),
         ),
-      ).thenAnswer((_) async => {'remote-1': 'checksum-1', 'remote-2': 'checksum-2'});
+      ).thenAnswer((_) async => deleted({'remote-1': 'checksum-1', 'remote-2': 'checksum-2'}));
 
       await sut.recordLocallyDeletedFromDelta(['local-1', 'local-2'], 'owner-1');
 
       verify(
-        () => mockLocalDeletionRepository.upsert('owner-1', {'remote-1': 'checksum-1', 'remote-2': 'checksum-2'}),
+        () => mockLocalDeletionRepository.upsert(
+          'owner-1',
+          deleted({'remote-1': 'checksum-1', 'remote-2': 'checksum-2'}),
+          awaitingConfirmation: false,
+        ),
       ).called(1);
     });
 
@@ -339,14 +375,20 @@ void main() {
           any(),
           any(),
           includeIosSharedAlbums: any(named: 'includeIosSharedAlbums'),
+          smartAlbumIds: any(named: 'smartAlbumIds'),
         ),
-      ).thenAnswer((_) async => {'r-1': 'c-1'});
+      ).thenAnswer((_) async => deleted({'r-1': 'c-1'}));
 
       final excluded = await sut.recordLocallyDeletedFromDelta(['local-excluded', 'local-1'], 'owner-1');
 
       expect(excluded, {'local-excluded'});
       verify(
-        () => mockLocalDeletionRepository.getBackedUp('owner-1', ['local-1'], includeIosSharedAlbums: false),
+        () => mockLocalDeletionRepository.getBackedUp(
+          'owner-1',
+          ['local-1'],
+          includeIosSharedAlbums: false,
+          smartAlbumIds: any(named: 'smartAlbumIds'),
+        ),
       ).called(1);
     });
 
@@ -361,9 +403,13 @@ void main() {
           any(),
           any(),
           includeIosSharedAlbums: any(named: 'includeIosSharedAlbums'),
+          smartAlbumIds: any(named: 'smartAlbumIds'),
         ),
       );
-      verifyNever(() => mockLocalDeletionRepository.upsert(any(), any()));
+      verifyNever(
+        () =>
+            mockLocalDeletionRepository.upsert(any(), any(), awaitingConfirmation: any(named: 'awaitingConfirmation')),
+      );
     });
 
     test('queues nothing when the setting was turned off during the sync', () async {
@@ -373,106 +419,118 @@ void main() {
           any(),
           any(),
           includeIosSharedAlbums: any(named: 'includeIosSharedAlbums'),
+          smartAlbumIds: any(named: 'smartAlbumIds'),
         ),
       ).thenAnswer((_) async {
         await changeOnSettingsPage(SettingsKey.backupSyncLocalDeletions, enabled: false);
-        return {'r-1': 'c-1'};
+        return deleted({'r-1': 'c-1'});
       });
 
       final excluded = await sut.recordLocallyDeletedFromDelta(['local-excluded', 'local-1'], 'owner-1');
 
       expect(excluded, {'local-excluded'});
-      verifyNever(() => mockLocalDeletionRepository.upsert(any(), any()));
+      verifyNever(
+        () =>
+            mockLocalDeletionRepository.upsert(any(), any(), awaitingConfirmation: any(named: 'awaitingConfirmation')),
+      );
     });
 
     test('leaves out iOS shared albums when their option was turned off during the sync', () async {
       await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletionsInIosSharedAlbums, true);
-      stubBackedUp(1, total: 100, shared: 2);
+      stubBackedUp(1, shared: 2);
       await changeOnSettingsPage(SettingsKey.backupSyncLocalDeletionsInIosSharedAlbums, enabled: false);
 
       await sut.recordLocallyDeletedFromDelta(localIds(3), 'owner-1');
 
-      verify(() => mockLocalDeletionRepository.upsert('owner-1', backedUp(1))).called(1);
+      verify(() => mockLocalDeletionRepository.upsert('owner-1', backedUp(1), awaitingConfirmation: false)).called(1);
     });
 
     test('does not add iOS shared albums when their option was turned on during the sync', () async {
-      stubBackedUp(1, total: 100, shared: 2);
+      stubBackedUp(1, shared: 2);
       // Too late for the shared albums that left the device to be excluded
       await changeOnSettingsPage(SettingsKey.backupSyncLocalDeletionsInIosSharedAlbums, enabled: true);
 
       await sut.recordLocallyDeletedFromDelta(localIds(3), 'owner-1');
 
-      verifyNever(() => mockLocalDeletionRepository.getBackedUp(any(), any(), includeIosSharedAlbums: true));
-      verify(() => mockLocalDeletionRepository.upsert('owner-1', backedUp(1))).called(1);
+      verifyNever(
+        () => mockLocalDeletionRepository.getBackedUp(
+          any(),
+          any(),
+          includeIosSharedAlbums: true,
+          smartAlbumIds: any(named: 'smartAlbumIds'),
+        ),
+      );
+      verify(() => mockLocalDeletionRepository.upsert('owner-1', backedUp(1), awaitingConfirmation: false)).called(1);
     });
 
-    group('mass vanish guard', () {
-      test('skips queuing when almost every backed-up asset vanished at once', () async {
-        when(() => mockLocalDeletionRepository.getExcluded(any())).thenAnswer((_) async => {'local-excluded'});
-        stubBackedUp(91, total: 100);
-
-        final excluded = await sut.recordLocallyDeletedFromDelta([...localIds(91), 'local-excluded'], 'owner-1');
-
-        // The exclusions are still returned, as processDelta removes their rows anyway
-        expect(excluded, {'local-excluded'});
-        verify(() => mockLocalDeletionRepository.countBackedUp('owner-1')).called(1);
-        verifyNever(() => mockLocalDeletionRepository.upsert(any(), any()));
-      });
-
-      test('skips queuing when 46 of 50 backed-up assets vanished', () async {
-        stubBackedUp(46, total: 50);
-
-        await sut.recordLocallyDeletedFromDelta(localIds(46), 'owner-1');
-
-        verifyNever(() => mockLocalDeletionRepository.upsert(any(), any()));
-      });
-
-      test('queues the deletions when at most 90 percent of the backed-up assets vanished', () async {
-        stubBackedUp(90, total: 100);
+    group('confirmation', () {
+      test('does not hold back fewer than 50 deletions', () async {
+        stubBackedUp(49);
 
         // Deletions without a backed-up copy do not count
         await sut.recordLocallyDeletedFromDelta(localIds(120), 'owner-1');
 
-        verify(() => mockLocalDeletionRepository.upsert('owner-1', backedUp(90))).called(1);
+        verify(
+          () => mockLocalDeletionRepository.upsert('owner-1', backedUp(49), awaitingConfirmation: false),
+        ).called(1);
       });
 
-      test('queues the deletions of a library under 50 backed-up assets that vanished as a whole', () async {
-        stubBackedUp(49, total: 49);
+      test('holds back 50 deletions for confirmation', () async {
+        when(() => mockLocalDeletionRepository.getExcluded(any())).thenAnswer((_) async => {'local-excluded'});
+        stubBackedUp(50);
 
-        await sut.recordLocallyDeletedFromDelta(localIds(49), 'owner-1');
+        final excluded = await sut.recordLocallyDeletedFromDelta([...localIds(50), 'local-excluded'], 'owner-1');
 
-        verify(() => mockLocalDeletionRepository.upsert('owner-1', backedUp(49))).called(1);
+        // The exclusions are still returned, as processDelta removes their rows anyway
+        expect(excluded, {'local-excluded'});
+        verify(() => mockLocalDeletionRepository.upsert('owner-1', backedUp(50), awaitingConfirmation: true)).called(1);
+        verifyNever(() => mockLocalDeletionRepository.holdForConfirmation(any()));
       });
 
-      test('does not count the backed-up assets when too few vanished to trip the guard', () async {
-        stubBackedUp(45, total: 50);
-
-        await sut.recordLocallyDeletedFromDelta(localIds(100), 'owner-1');
-
-        verifyNever(() => mockLocalDeletionRepository.countBackedUp(any()));
-        verify(() => mockLocalDeletionRepository.upsert('owner-1', backedUp(45))).called(1);
-      });
-
-      test('measures the library alone when iOS shared albums are included', () async {
+      test('counts the removals from iOS shared albums along with the library', () async {
         await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletionsInIosSharedAlbums, true);
-        // The shared album copies among the deletions do not count, only the library does
-        stubBackedUp(91, total: 100, shared: 200);
+        stubBackedUp(20, shared: 30);
 
-        await sut.recordLocallyDeletedFromDelta(localIds(291), 'owner-1');
+        await sut.recordLocallyDeletedFromDelta(localIds(50), 'owner-1');
+
+        verify(() => mockLocalDeletionRepository.upsert('owner-1', backedUp(50), awaitingConfirmation: true)).called(1);
+      });
+
+      test('holds back every deletion while others await confirmation', () async {
+        when(() => mockLocalDeletionRepository.hasAwaitingConfirmation('owner-1')).thenAnswer((_) async => true);
+        stubBackedUp(1);
+
+        await sut.recordLocallyDeletedFromDelta(localIds(1), 'owner-1');
+
+        verify(() => mockLocalDeletionRepository.upsert('owner-1', backedUp(1), awaitingConfirmation: true)).called(1);
+      });
+
+      test('holds back the deletions that the sync queued before once it reaches 50', () async {
+        final queuedBySync = {for (int i = 100; i < 130; i++) 'remote-$i'};
+        stubBackedUp(20);
+
+        await sut.recordLocallyDeletedFromDelta(localIds(20), 'owner-1', queuedBySync: queuedBySync);
+
+        verify(() => mockLocalDeletionRepository.upsert('owner-1', backedUp(20), awaitingConfirmation: true)).called(1);
+        verify(
+          () => mockLocalDeletionRepository.holdForConfirmation({for (int i = 100; i < 130; i++) 'remote-$i'}),
+        ).called(1);
+        expect(queuedBySync, hasLength(50));
+      });
+
+      test('passes the smart albums on, so the deletions are listed under the right album', () async {
+        stubBackedUp(1);
+
+        await sut.recordLocallyDeletedFromDelta(localIds(1), 'owner-1', smartAlbumIds: ['recents']);
 
         verify(
-          () => mockLocalDeletionRepository.getBackedUp('owner-1', localIds(291), includeIosSharedAlbums: false),
+          () => mockLocalDeletionRepository.getBackedUp(
+            'owner-1',
+            localIds(1),
+            includeIosSharedAlbums: false,
+            smartAlbumIds: ['recents'],
+          ),
         ).called(1);
-        verifyNever(() => mockLocalDeletionRepository.upsert(any(), any()));
-      });
-
-      test('queues the removals from iOS shared albums along with a library below the guard', () async {
-        await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletionsInIosSharedAlbums, true);
-        stubBackedUp(40, total: 100, shared: 60);
-
-        await sut.recordLocallyDeletedFromDelta(localIds(100), 'owner-1');
-
-        verify(() => mockLocalDeletionRepository.upsert('owner-1', backedUp(100))).called(1);
       });
     });
   });
@@ -513,6 +571,7 @@ void main() {
           any(),
           any(),
           includeIosSharedAlbums: any(named: 'includeIosSharedAlbums'),
+          smartAlbumIds: any(named: 'smartAlbumIds'),
         ),
       );
     });
@@ -529,6 +588,7 @@ void main() {
           any(),
           any(),
           includeIosSharedAlbums: any(named: 'includeIosSharedAlbums'),
+          smartAlbumIds: any(named: 'smartAlbumIds'),
         ),
       );
     });
@@ -545,6 +605,7 @@ void main() {
           any(),
           any(),
           includeIosSharedAlbums: any(named: 'includeIosSharedAlbums'),
+          smartAlbumIds: any(named: 'smartAlbumIds'),
         ),
       );
     });
@@ -568,14 +629,24 @@ void main() {
           any(),
           any(),
           includeIosSharedAlbums: any(named: 'includeIosSharedAlbums'),
+          smartAlbumIds: any(named: 'smartAlbumIds'),
         ),
-      ).thenAnswer((_) async => {'remote-1': 'checksum-1'});
+      ).thenAnswer((_) async => deleted({'remote-1': 'checksum-1'}));
 
       await sut.sync();
 
       verifyInOrder([
-        () => mockLocalDeletionRepository.getBackedUp(UserStub.admin.id, ['local-1'], includeIosSharedAlbums: false),
-        () => mockLocalDeletionRepository.upsert(UserStub.admin.id, {'remote-1': 'checksum-1'}),
+        () => mockLocalDeletionRepository.getBackedUp(
+          UserStub.admin.id,
+          ['local-1'],
+          includeIosSharedAlbums: false,
+          smartAlbumIds: any(named: 'smartAlbumIds'),
+        ),
+        () => mockLocalDeletionRepository.upsert(
+          UserStub.admin.id,
+          deleted({'remote-1': 'checksum-1'}),
+          awaitingConfirmation: false,
+        ),
         () => mockLocalAlbumRepository.processDelta(
           updates: any(named: 'updates'),
           deletes: any(named: 'deletes'),
@@ -594,11 +665,38 @@ void main() {
       await sut.sync();
 
       verify(
-        () => mockLocalDeletionRepository.getBackedUp(UserStub.admin.id, ['local-1'], includeIosSharedAlbums: true),
+        () => mockLocalDeletionRepository.getBackedUp(
+          UserStub.admin.id,
+          ['local-1'],
+          includeIosSharedAlbums: true,
+          smartAlbumIds: any(named: 'smartAlbumIds'),
+        ),
       ).called(1);
     });
 
-    test('removes the rows but queues nothing when almost every backed-up asset vanished at once', () async {
+    test('passes the smart albums of the device on', () async {
+      await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletions, true);
+      stubDeltaSync(const ['local-1']);
+      when(() => mockNativeSyncApi.getAlbums()).thenAnswer(
+        (_) async => [
+          PlatformAlbum(id: 'recents', name: 'Recents', isCloud: false, assetCount: 1, isSmart: true),
+          PlatformAlbum(id: 'trip', name: 'Trip', isCloud: false, assetCount: 1, isSmart: false),
+        ],
+      );
+
+      await sut.sync();
+
+      verify(
+        () => mockLocalDeletionRepository.getBackedUp(
+          UserStub.admin.id,
+          ['local-1'],
+          includeIosSharedAlbums: false,
+          smartAlbumIds: ['recents'],
+        ),
+      ).called(1);
+    });
+
+    test('removes the rows and holds back the deletions when almost every backed-up asset vanished at once', () async {
       await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletions, true);
       await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletionsInIosSharedAlbums, true);
       // E.g. signed out of iCloud: the library leaves the device along with the shared albums
@@ -606,15 +704,13 @@ void main() {
       stubDeltaSync(deletes);
       // Stands in for the exclusion rows of the shared albums that left the device
       when(() => mockLocalDeletionRepository.getExcluded(any())).thenAnswer((_) async => {'shared-1', 'shared-2'});
-      stubBackedUp(100, total: 100);
+      stubBackedUp(100);
 
       await sut.sync();
 
       verify(
-        () => mockLocalDeletionRepository.getBackedUp(UserStub.admin.id, localIds(100), includeIosSharedAlbums: false),
+        () => mockLocalDeletionRepository.upsert(UserStub.admin.id, backedUp(100), awaitingConfirmation: true),
       ).called(1);
-      verify(() => mockLocalDeletionRepository.countBackedUp(UserStub.admin.id)).called(1);
-      verifyNever(() => mockLocalDeletionRepository.upsert(any(), any()));
       verifyInOrder([
         () => mockLocalAlbumRepository.processDelta(
           updates: any(named: 'updates'),
@@ -660,6 +756,7 @@ void main() {
               updatedAt: 1800000000,
               isCloud: true,
               assetCount: deviceAssetCount,
+              isSmart: false,
             ),
           ],
         );
@@ -677,12 +774,18 @@ void main() {
           ),
         ).thenAnswer((_) async {});
         when(() => mockLocalDeletionRepository.markExcluded(any())).thenAnswer((_) async {});
-        // A shared album copy, which the library total leaves out
+        // A shared album copy
         when(() => mockLocalDeletionRepository.getSnapshotDeletionCandidates(any())).thenAnswer(
-          (_) async => (
-            candidates: [(localId: 'local-1', remoteId: 'remote-1', checksum: 'checksum-1', inIosSharedAlbum: true)],
-            total: 0,
-          ),
+          (_) async => [
+            (
+              localId: 'local-1',
+              remoteId: 'remote-1',
+              checksum: 'checksum-1',
+              inIosSharedAlbum: true,
+              albumId: 'album-1',
+              albumName: 'Camera',
+            ),
+          ],
         );
       }
 
@@ -694,7 +797,11 @@ void main() {
         await sut.sync();
 
         verifyInOrder([
-          () => mockLocalDeletionRepository.snapshotBackedUpAssets(UserStub.admin.id, includeIosSharedAlbums: true),
+          () => mockLocalDeletionRepository.snapshotBackedUpAssets(
+            UserStub.admin.id,
+            includeIosSharedAlbums: true,
+            smartAlbumIds: any(named: 'smartAlbumIds'),
+          ),
           () => mockLocalAlbumRepository.upsert(
             any(),
             toUpsert: any(named: 'toUpsert'),
@@ -702,12 +809,69 @@ void main() {
           ),
           () => mockLocalDeletionRepository.getSnapshotDeletionCandidates(1),
           () => mockNativeSyncApi.getExistingAssetIds(['local-1']),
-          () => mockLocalDeletionRepository.upsert(UserStub.admin.id, {'remote-1': 'checksum-1'}),
+          () => mockLocalDeletionRepository.upsert(
+            UserStub.admin.id,
+            deleted({'remote-1': 'checksum-1'}),
+            awaitingConfirmation: false,
+          ),
           () => mockLocalDeletionRepository.clearSnapshotAndConsumeExclusions(1),
           () => mockNativeSyncApi.checkpointSync(),
         ]);
         verifyNever(() => mockLocalDeletionRepository.markExcluded(any()));
       });
+
+      test('holds back the deletions of the delta along with the removals once they reach 50 together', () async {
+        await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletions, true);
+        await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletionsInIosSharedAlbums, true);
+        stubCloudAlbumSync();
+        when(() => mockNativeSyncApi.getMediaChanges()).thenAnswer(
+          (_) async => SyncDelta(hasChanges: true, updates: const [], deletes: localIds(30), assetAlbums: const {}),
+        );
+        stubBackedUp(30);
+        when(
+          () => mockLocalDeletionRepository.getSnapshotDeletionCandidates(any()),
+        ).thenAnswer((_) async => snapshotCandidates(20, from: 30, sharedFrom: 30));
+
+        await sut.sync();
+
+        verifyInOrder([
+          () => mockLocalDeletionRepository.upsert(UserStub.admin.id, backedUp(30), awaitingConfirmation: false),
+          () =>
+              mockLocalDeletionRepository.upsert(UserStub.admin.id, backedUp(20, from: 30), awaitingConfirmation: true),
+          () => mockLocalDeletionRepository.holdForConfirmation(backedUp(30).keys.toSet()),
+        ]);
+      });
+
+      for (final (name, delta, removals, held) in [
+        ('stay under 50 together', 30, 5, false),
+        ('reached 50 with the delta alone', 60, 5, true),
+      ]) {
+        test('holds back nothing more when the delta and the removals $name', () async {
+          await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletions, true);
+          await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletionsInIosSharedAlbums, true);
+          stubCloudAlbumSync();
+          when(() => mockNativeSyncApi.getMediaChanges()).thenAnswer(
+            (_) async =>
+                SyncDelta(hasChanges: true, updates: const [], deletes: localIds(delta), assetAlbums: const {}),
+          );
+          stubBackedUp(delta);
+          when(
+            () => mockLocalDeletionRepository.getSnapshotDeletionCandidates(any()),
+          ).thenAnswer((_) async => snapshotCandidates(removals, from: delta, sharedFrom: delta));
+
+          await sut.sync();
+
+          verifyInOrder([
+            () => mockLocalDeletionRepository.upsert(UserStub.admin.id, backedUp(delta), awaitingConfirmation: held),
+            () => mockLocalDeletionRepository.upsert(
+              UserStub.admin.id,
+              backedUp(removals, from: delta),
+              awaitingConfirmation: held,
+            ),
+          ]);
+          verifyNever(() => mockLocalDeletionRepository.holdForConfirmation(any()));
+        });
+      }
 
       test('does not queue the removals when the option was turned off during the sync', () async {
         await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletions, true);
@@ -720,7 +884,13 @@ void main() {
 
         await sut.sync();
 
-        verifyNever(() => mockLocalDeletionRepository.upsert(any(), any(that: isNotEmpty)));
+        verifyNever(
+          () => mockLocalDeletionRepository.upsert(
+            any(),
+            any(that: isNotEmpty),
+            awaitingConfirmation: any(named: 'awaitingConfirmation'),
+          ),
+        );
         verify(() => mockLocalDeletionRepository.clearSnapshotAndConsumeExclusions(1)).called(1);
       });
 
@@ -732,7 +902,11 @@ void main() {
         await sut.sync();
 
         verifyInOrder([
-          () => mockLocalDeletionRepository.snapshotBackedUpAssets(UserStub.admin.id, includeIosSharedAlbums: true),
+          () => mockLocalDeletionRepository.snapshotBackedUpAssets(
+            UserStub.admin.id,
+            includeIosSharedAlbums: true,
+            smartAlbumIds: any(named: 'smartAlbumIds'),
+          ),
           () => mockLocalDeletionRepository.markExcluded(['local-1', 'local-2']),
           () => mockLocalAlbumRepository.upsert(any(), toDelete: ['local-1', 'local-2']),
           () => mockLocalDeletionRepository.getSnapshotDeletionCandidates(1),
@@ -756,6 +930,7 @@ void main() {
           () => mockLocalDeletionRepository.snapshotBackedUpAssets(
             any(),
             includeIosSharedAlbums: any(named: 'includeIosSharedAlbums'),
+            smartAlbumIds: any(named: 'smartAlbumIds'),
           ),
         );
         verifyNever(() => mockLocalDeletionRepository.getSnapshotDeletionCandidates(any()));
@@ -771,6 +946,7 @@ void main() {
           () => mockLocalDeletionRepository.snapshotBackedUpAssets(
             any(),
             includeIosSharedAlbums: any(named: 'includeIosSharedAlbums'),
+            smartAlbumIds: any(named: 'smartAlbumIds'),
           ),
         );
         verifyNever(() => mockLocalDeletionRepository.getSnapshotDeletionCandidates(any()));
@@ -827,7 +1003,13 @@ void main() {
 
         await cancelledSut.sync();
 
-        verify(() => mockLocalDeletionRepository.upsert(UserStub.admin.id, {'remote-1': 'checksum-1'})).called(1);
+        verify(
+          () => mockLocalDeletionRepository.upsert(
+            UserStub.admin.id,
+            deleted({'remote-1': 'checksum-1'}),
+            awaitingConfirmation: false,
+          ),
+        ).called(1);
         verify(() => mockLocalDeletionRepository.clearSnapshotAndConsumeExclusions(1)).called(1);
         verifyNever(() => mockNativeSyncApi.getAssetsForAlbum(any()));
         verifyNever(() => mockNativeSyncApi.checkpointSync());
@@ -882,7 +1064,14 @@ void main() {
         await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletionsInIosSharedAlbums, true);
         stubRemovedSharedAlbum(
           deviceAlbums: [
-            PlatformAlbum(id: 'shared-1', name: 'Shared', updatedAt: 1800000000, isCloud: true, assetCount: 0),
+            PlatformAlbum(
+              id: 'shared-1',
+              name: 'Shared',
+              updatedAt: 1800000000,
+              isCloud: true,
+              assetCount: 0,
+              isSmart: false,
+            ),
           ],
         );
 
@@ -901,17 +1090,26 @@ void main() {
         // Count and newest date unchanged, so the cloud album sync skips the album
         stubRemovedSharedAlbum(
           deviceAlbums: [
-            PlatformAlbum(id: 'shared-1', name: 'Shared', updatedAt: 1767225600, isCloud: true, assetCount: 2),
+            PlatformAlbum(
+              id: 'shared-1',
+              name: 'Shared',
+              updatedAt: 1767225600,
+              isCloud: true,
+              assetCount: 2,
+              isSmart: false,
+            ),
           ],
         );
 
         await sut.sync();
 
         verify(
-          () => mockLocalDeletionRepository.getBackedUp(UserStub.admin.id, [
-            'local-1',
-            'local-2',
-          ], includeIosSharedAlbums: true),
+          () => mockLocalDeletionRepository.getBackedUp(
+            UserStub.admin.id,
+            ['local-1', 'local-2'],
+            includeIosSharedAlbums: true,
+            smartAlbumIds: any(named: 'smartAlbumIds'),
+          ),
         ).called(1);
         verifyNever(() => mockLocalDeletionRepository.markExcluded(any()));
       });
@@ -923,7 +1121,14 @@ void main() {
         stubDeltaSync(const ['local-1', 'local-2'], albums: [regularAlbum]);
         when(() => mockNativeSyncApi.getAlbums()).thenAnswer(
           (_) async => [
-            PlatformAlbum(id: 'album-1', name: 'Camera', updatedAt: 1800000000, isCloud: false, assetCount: 0),
+            PlatformAlbum(
+              id: 'album-1',
+              name: 'Camera',
+              updatedAt: 1800000000,
+              isCloud: false,
+              assetCount: 0,
+              isSmart: false,
+            ),
           ],
         );
         when(() => mockLocalAlbumRepository.getAssetIds('album-1')).thenAnswer((_) async => ['local-1', 'local-2']);
@@ -933,10 +1138,12 @@ void main() {
 
         verifyNever(() => mockLocalDeletionRepository.markExcluded(any()));
         verify(
-          () => mockLocalDeletionRepository.getBackedUp(UserStub.admin.id, [
-            'local-1',
-            'local-2',
-          ], includeIosSharedAlbums: true),
+          () => mockLocalDeletionRepository.getBackedUp(
+            UserStub.admin.id,
+            ['local-1', 'local-2'],
+            includeIosSharedAlbums: true,
+            smartAlbumIds: any(named: 'smartAlbumIds'),
+          ),
         ).called(1);
       });
 
@@ -959,10 +1166,12 @@ void main() {
         await sut.sync();
 
         verifyInOrder([
-          () => mockLocalDeletionRepository.getBackedUp(UserStub.admin.id, [
-            'local-1',
-            'local-2',
-          ], includeIosSharedAlbums: false),
+          () => mockLocalDeletionRepository.getBackedUp(
+            UserStub.admin.id,
+            ['local-1', 'local-2'],
+            includeIosSharedAlbums: false,
+            smartAlbumIds: any(named: 'smartAlbumIds'),
+          ),
           () => mockLocalAlbumRepository.updateAll(any()),
         ]);
         verifyNever(() => mockLocalDeletionRepository.markExcluded(any()));
@@ -977,10 +1186,16 @@ void main() {
 
     void stubCandidates() {
       when(() => mockLocalDeletionRepository.getSnapshotDeletionCandidates(any())).thenAnswer(
-        (_) async => (
-          candidates: [(localId: 'local-1', remoteId: 'remote-1', checksum: 'checksum-1', inIosSharedAlbum: false)],
-          total: 1,
-        ),
+        (_) async => [
+          (
+            localId: 'local-1',
+            remoteId: 'remote-1',
+            checksum: 'checksum-1',
+            inIosSharedAlbum: false,
+            albumId: 'album-1',
+            albumName: 'Camera',
+          ),
+        ],
       );
     }
 
@@ -993,7 +1208,11 @@ void main() {
       await sut.sync();
 
       verifyInOrder([
-        () => mockLocalDeletionRepository.snapshotBackedUpAssets(UserStub.admin.id, includeIosSharedAlbums: false),
+        () => mockLocalDeletionRepository.snapshotBackedUpAssets(
+          UserStub.admin.id,
+          includeIosSharedAlbums: false,
+          smartAlbumIds: any(named: 'smartAlbumIds'),
+        ),
         () => mockLocalAlbumRepository.updateAll(any()),
         () => mockLocalAlbumRepository.processDelta(
           updates: any(named: 'updates'),
@@ -1003,7 +1222,11 @@ void main() {
         () => mockLocalAlbumRepository.syncDeletes('album-1', any()),
         () => mockLocalDeletionRepository.getSnapshotDeletionCandidates(1),
         () => mockNativeSyncApi.getExistingAssetIds(['local-1']),
-        () => mockLocalDeletionRepository.upsert(UserStub.admin.id, {'remote-1': 'checksum-1'}),
+        () => mockLocalDeletionRepository.upsert(
+          UserStub.admin.id,
+          deleted({'remote-1': 'checksum-1'}),
+          awaitingConfirmation: false,
+        ),
         () => mockLocalDeletionRepository.clearSnapshotAndConsumeExclusions(1),
         () => mockNativeSyncApi.checkpointSync(),
       ]);
@@ -1020,7 +1243,10 @@ void main() {
 
       await sut.sync();
 
-      verifyNever(() => mockLocalDeletionRepository.upsert(any(), any()));
+      verifyNever(
+        () =>
+            mockLocalDeletionRepository.upsert(any(), any(), awaitingConfirmation: any(named: 'awaitingConfirmation')),
+      );
       verify(() => mockLocalDeletionRepository.clearSnapshotAndConsumeExclusions(1)).called(1);
     });
 
@@ -1037,6 +1263,7 @@ void main() {
           any(),
           any(),
           includeIosSharedAlbums: any(named: 'includeIosSharedAlbums'),
+          smartAlbumIds: any(named: 'smartAlbumIds'),
         ),
       );
     });
@@ -1050,6 +1277,7 @@ void main() {
         () => mockLocalDeletionRepository.snapshotBackedUpAssets(
           any(),
           includeIosSharedAlbums: any(named: 'includeIosSharedAlbums'),
+          smartAlbumIds: any(named: 'smartAlbumIds'),
         ),
       );
       verifyNever(() => mockLocalDeletionRepository.getSnapshotDeletionCandidates(any()));
@@ -1067,6 +1295,7 @@ void main() {
         () => mockLocalDeletionRepository.snapshotBackedUpAssets(
           any(),
           includeIosSharedAlbums: any(named: 'includeIosSharedAlbums'),
+          smartAlbumIds: any(named: 'smartAlbumIds'),
         ),
       );
       verifyNever(() => mockLocalDeletionRepository.getSnapshotDeletionCandidates(any()));
@@ -1092,7 +1321,13 @@ void main() {
 
       await cancelledSut.sync();
 
-      verify(() => mockLocalDeletionRepository.upsert(UserStub.admin.id, {'remote-1': 'checksum-1'})).called(1);
+      verify(
+        () => mockLocalDeletionRepository.upsert(
+          UserStub.admin.id,
+          deleted({'remote-1': 'checksum-1'}),
+          awaitingConfirmation: false,
+        ),
+      ).called(1);
       verifyNever(() => mockLocalAlbumRepository.syncDeletes(any(), any()));
       verifyNever(() => mockNativeSyncApi.checkpointSync());
     });
@@ -1112,20 +1347,34 @@ void main() {
 
       stubFullSync();
       when(() => mockLocalDeletionRepository.getSnapshotDeletionCandidates(any())).thenAnswer(
-        (_) async => (
-          candidates: [(localId: 'local-1', remoteId: 'remote-1', checksum: 'checksum-1', inIosSharedAlbum: false)],
-          total: 1,
-        ),
+        (_) async => [
+          (
+            localId: 'local-1',
+            remoteId: 'remote-1',
+            checksum: 'checksum-1',
+            inIosSharedAlbum: false,
+            albumId: 'album-1',
+            albumName: 'Camera',
+          ),
+        ],
       );
 
       await sut.fullSync();
 
       verifyInOrder([
-        () => mockLocalDeletionRepository.snapshotBackedUpAssets(UserStub.admin.id, includeIosSharedAlbums: false),
-        () => mockNativeSyncApi.getAlbums(),
+        () => mockLocalDeletionRepository.snapshotBackedUpAssets(
+          UserStub.admin.id,
+          includeIosSharedAlbums: false,
+          smartAlbumIds: any(named: 'smartAlbumIds'),
+        ),
+        () => mockLocalAlbumRepository.getAll(sortBy: const {SortLocalAlbumsBy.id}),
         () => mockLocalDeletionRepository.getSnapshotDeletionCandidates(1),
         () => mockNativeSyncApi.getExistingAssetIds(['local-1']),
-        () => mockLocalDeletionRepository.upsert(UserStub.admin.id, {'remote-1': 'checksum-1'}),
+        () => mockLocalDeletionRepository.upsert(
+          UserStub.admin.id,
+          deleted({'remote-1': 'checksum-1'}),
+          awaitingConfirmation: false,
+        ),
         () => mockLocalDeletionRepository.clearSnapshotAndConsumeExclusions(1),
         () => mockNativeSyncApi.checkpointSync(),
       ]);
@@ -1140,7 +1389,11 @@ void main() {
       await sut.fullSync();
 
       verify(
-        () => mockLocalDeletionRepository.snapshotBackedUpAssets(UserStub.admin.id, includeIosSharedAlbums: true),
+        () => mockLocalDeletionRepository.snapshotBackedUpAssets(
+          UserStub.admin.id,
+          includeIosSharedAlbums: true,
+          smartAlbumIds: any(named: 'smartAlbumIds'),
+        ),
       ).called(1);
     });
 
@@ -1171,7 +1424,11 @@ void main() {
         await sut.fullSync();
 
         verifyInOrder([
-          () => mockLocalDeletionRepository.snapshotBackedUpAssets(UserStub.admin.id, includeIosSharedAlbums: true),
+          () => mockLocalDeletionRepository.snapshotBackedUpAssets(
+            UserStub.admin.id,
+            includeIosSharedAlbums: true,
+            smartAlbumIds: any(named: 'smartAlbumIds'),
+          ),
           () => mockLocalDeletionRepository.markExcluded(['local-1']),
           () => mockLocalAlbumRepository.deleteAlbum('shared-1'),
           () => mockLocalDeletionRepository.getSnapshotDeletionCandidates(1),
@@ -1210,6 +1467,7 @@ void main() {
         () => mockLocalDeletionRepository.snapshotBackedUpAssets(
           any(),
           includeIosSharedAlbums: any(named: 'includeIosSharedAlbums'),
+          smartAlbumIds: any(named: 'smartAlbumIds'),
         ),
       );
       verifyNever(() => mockLocalDeletionRepository.getSnapshotDeletionCandidates(any()));
@@ -1226,6 +1484,7 @@ void main() {
         () => mockLocalDeletionRepository.snapshotBackedUpAssets(
           any(),
           includeIosSharedAlbums: any(named: 'includeIosSharedAlbums'),
+          smartAlbumIds: any(named: 'smartAlbumIds'),
         ),
       );
       verifyNever(() => mockLocalDeletionRepository.getSnapshotDeletionCandidates(any()));
@@ -1249,20 +1508,36 @@ void main() {
 
       stubFullSync();
       when(() => mockLocalDeletionRepository.getSnapshotDeletionCandidates(any())).thenAnswer(
-        (_) async => (
-          candidates: [(localId: 'local-1', remoteId: 'remote-1', checksum: 'checksum-1', inIosSharedAlbum: false)],
-          total: 1,
-        ),
+        (_) async => [
+          (
+            localId: 'local-1',
+            remoteId: 'remote-1',
+            checksum: 'checksum-1',
+            inIosSharedAlbum: false,
+            albumId: 'album-1',
+            albumName: 'Camera',
+          ),
+        ],
       );
 
       await cancelledSut.fullSync();
 
       // The detected deletions are persisted for the next run.
       verify(
-        () => mockLocalDeletionRepository.snapshotBackedUpAssets(UserStub.admin.id, includeIosSharedAlbums: false),
+        () => mockLocalDeletionRepository.snapshotBackedUpAssets(
+          UserStub.admin.id,
+          includeIosSharedAlbums: false,
+          smartAlbumIds: any(named: 'smartAlbumIds'),
+        ),
       ).called(1);
       verify(() => mockLocalDeletionRepository.getSnapshotDeletionCandidates(any())).called(1);
-      verify(() => mockLocalDeletionRepository.upsert(UserStub.admin.id, {'remote-1': 'checksum-1'})).called(1);
+      verify(
+        () => mockLocalDeletionRepository.upsert(
+          UserStub.admin.id,
+          deleted({'remote-1': 'checksum-1'}),
+          awaitingConfirmation: false,
+        ),
+      ).called(1);
     });
 
     test('does not queue candidates the device still reports as present', () async {
@@ -1270,74 +1545,174 @@ void main() {
 
       stubFullSync();
       when(() => mockLocalDeletionRepository.getSnapshotDeletionCandidates(any())).thenAnswer(
-        (_) async => (
-          candidates: [
-            (localId: 'hidden-1', remoteId: 'remote-1', checksum: 'checksum-1', inIosSharedAlbum: false),
-            (localId: 'gone-2', remoteId: 'remote-2', checksum: 'checksum-2', inIosSharedAlbum: false),
-          ],
-          total: 2,
-        ),
+        (_) async => [
+          for (final (localId, i) in [('hidden-1', 1), ('gone-2', 2)])
+            (
+              localId: localId,
+              remoteId: 'remote-$i',
+              checksum: 'checksum-$i',
+              inIosSharedAlbum: false,
+              albumId: 'album-1',
+              albumName: 'Camera',
+            ),
+        ],
       );
       // hidden-1 is still on the device (e.g. hidden on iOS); only gone-2 is really deleted.
       when(() => mockNativeSyncApi.getExistingAssetIds(any())).thenAnswer((_) async => ['hidden-1']);
 
       await sut.fullSync();
 
-      verify(() => mockLocalDeletionRepository.upsert(UserStub.admin.id, {'remote-2': 'checksum-2'})).called(1);
+      verify(
+        () => mockLocalDeletionRepository.upsert(
+          UserStub.admin.id,
+          deleted({'remote-2': 'checksum-2'}),
+          awaitingConfirmation: false,
+        ),
+      ).called(1);
       verify(() => mockLocalDeletionRepository.clearSnapshotAndConsumeExclusions(any())).called(1);
     });
 
-    test('skips the deletion sync when almost every backed-up asset vanished at once', () async {
+    test('lists the deletions under the album that the snapshot recorded', () async {
       await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletions, true);
-
       stubFullSync();
-      final candidates = [
-        for (int i = 0; i < 100; i++)
-          (localId: 'local-$i', remoteId: 'remote-$i', checksum: 'checksum-$i', inIosSharedAlbum: false),
-      ];
-      when(
-        () => mockLocalDeletionRepository.getSnapshotDeletionCandidates(any()),
-      ).thenAnswer((_) async => (candidates: candidates, total: 100));
+      when(() => mockLocalDeletionRepository.getSnapshotDeletionCandidates(any())).thenAnswer(
+        (_) async => [
+          (
+            localId: 'local-1',
+            remoteId: 'remote-1',
+            checksum: 'checksum-1',
+            inIosSharedAlbum: false,
+            albumId: 'trip',
+            albumName: 'Trip',
+          ),
+        ],
+      );
 
       await sut.fullSync();
 
-      // A near-total wipe is a device state change, not deletions. Nothing is
-      // queued, but the snapshot is still cleared for the next run.
-      verifyNever(() => mockLocalDeletionRepository.upsert(any(), any()));
-      verify(() => mockLocalDeletionRepository.clearSnapshotAndConsumeExclusions(any())).called(1);
+      verify(
+        () => mockLocalDeletionRepository.upsert(UserStub.admin.id, {
+          'remote-1': (checksum: 'checksum-1', albumId: 'trip', albumName: 'Trip'),
+        }, awaitingConfirmation: false),
+      ).called(1);
     });
 
-    group('with the copies in iOS shared albums', () {
-      List<SnapshotCandidate> candidates({required int library, required int shared}) => [
-        for (int i = 0; i < library + shared; i++)
-          (localId: 'local-$i', remoteId: 'remote-$i', checksum: 'checksum-$i', inIosSharedAlbum: i >= library),
-      ];
+    test('reads the albums first, so the snapshot knows the smart albums', () async {
+      await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletions, true);
+      stubFullSync();
+      final recents = LocalAlbum(id: 'recents', name: 'Recents', updatedAt: DateTime.utc(2026));
+      when(() => mockNativeSyncApi.getAlbums()).thenAnswer(
+        (_) async => [PlatformAlbum(id: 'recents', name: 'Recents', isCloud: false, assetCount: 0, isSmart: true)],
+      );
+      // Stored and unchanged, so the reconciliation leaves it alone
+      when(
+        () => mockLocalAlbumRepository.getAll(sortBy: const {SortLocalAlbumsBy.id}),
+      ).thenAnswer((_) async => [recents]);
 
+      await sut.fullSync();
+
+      verifyInOrder([
+        () => mockNativeSyncApi.getAlbums(),
+        () => mockLocalDeletionRepository.snapshotBackedUpAssets(
+          UserStub.admin.id,
+          includeIosSharedAlbums: false,
+          smartAlbumIds: ['recents'],
+        ),
+      ]);
+    });
+
+    group('confirmation', () {
       setUp(() async {
         await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletions, true);
-        await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletionsInIosSharedAlbums, true);
         stubFullSync();
       });
 
-      test('skips the deletion sync when almost every backed-up library asset vanished at once', () async {
-        // The total counts the library alone
+      test('queues 49 deletions without confirmation', () async {
         when(
           () => mockLocalDeletionRepository.getSnapshotDeletionCandidates(any()),
-        ).thenAnswer((_) async => (candidates: candidates(library: 91, shared: 200), total: 100));
+        ).thenAnswer((_) async => snapshotCandidates(49));
 
         await sut.fullSync();
 
-        verifyNever(() => mockLocalDeletionRepository.upsert(any(), any()));
+        verify(
+          () => mockLocalDeletionRepository.upsert(UserStub.admin.id, backedUp(49), awaitingConfirmation: false),
+        ).called(1);
       });
 
-      test('queues the removals from iOS shared albums along with a library below the guard', () async {
+      test('holds back 50 deletions for confirmation and clears the snapshot', () async {
         when(
           () => mockLocalDeletionRepository.getSnapshotDeletionCandidates(any()),
-        ).thenAnswer((_) async => (candidates: candidates(library: 40, shared: 60), total: 100));
+        ).thenAnswer((_) async => snapshotCandidates(50));
 
         await sut.fullSync();
 
-        verify(() => mockLocalDeletionRepository.upsert(UserStub.admin.id, backedUp(100))).called(1);
+        verify(
+          () => mockLocalDeletionRepository.upsert(UserStub.admin.id, backedUp(50), awaitingConfirmation: true),
+        ).called(1);
+        verify(() => mockLocalDeletionRepository.clearSnapshotAndConsumeExclusions(any())).called(1);
+      });
+
+      test('does not count the candidates that are still on the device', () async {
+        when(
+          () => mockLocalDeletionRepository.getSnapshotDeletionCandidates(any()),
+        ).thenAnswer((_) async => snapshotCandidates(60));
+        when(() => mockNativeSyncApi.getExistingAssetIds(any())).thenAnswer((_) async => localIds(60).sublist(0, 11));
+
+        await sut.fullSync();
+
+        verify(
+          () => mockLocalDeletionRepository.upsert(
+            UserStub.admin.id,
+            backedUp(49, from: 11),
+            awaitingConfirmation: false,
+          ),
+        ).called(1);
+      });
+
+      test('holds back a single deletion while others await confirmation', () async {
+        when(
+          () => mockLocalDeletionRepository.hasAwaitingConfirmation(UserStub.admin.id),
+        ).thenAnswer((_) async => true);
+        when(
+          () => mockLocalDeletionRepository.getSnapshotDeletionCandidates(any()),
+        ).thenAnswer((_) async => snapshotCandidates(1));
+
+        await sut.fullSync();
+
+        verify(
+          () => mockLocalDeletionRepository.upsert(UserStub.admin.id, backedUp(1), awaitingConfirmation: true),
+        ).called(1);
+      });
+
+      group('with the copies in iOS shared albums', () {
+        setUp(() async {
+          await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletionsInIosSharedAlbums, true);
+        });
+
+        test('counts the removals from iOS shared albums along with the library', () async {
+          when(
+            () => mockLocalDeletionRepository.getSnapshotDeletionCandidates(any()),
+          ).thenAnswer((_) async => snapshotCandidates(50, sharedFrom: 20));
+
+          await sut.fullSync();
+
+          verify(
+            () => mockLocalDeletionRepository.upsert(UserStub.admin.id, backedUp(50), awaitingConfirmation: true),
+          ).called(1);
+        });
+
+        test('does not count the copies in iOS shared albums when their option was turned off', () async {
+          when(
+            () => mockLocalDeletionRepository.getSnapshotDeletionCandidates(any()),
+          ).thenAnswer((_) async => snapshotCandidates(50, sharedFrom: 20));
+          await changeOnSettingsPage(SettingsKey.backupSyncLocalDeletionsInIosSharedAlbums, enabled: false);
+
+          await sut.fullSync();
+
+          verify(
+            () => mockLocalDeletionRepository.upsert(UserStub.admin.id, backedUp(20), awaitingConfirmation: false),
+          ).called(1);
+        });
       });
     });
   });

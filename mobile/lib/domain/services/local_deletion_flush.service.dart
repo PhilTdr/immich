@@ -80,6 +80,10 @@ class LocalDeletionFlushService {
     await _restoreReturned(ownerId);
     await _localDeletionRepository.pruneAlreadyTrashed();
     await _localDeletionRepository.pruneRestored(ownerId);
+    if (await _localDeletionRepository.hasAwaitingConfirmation(ownerId)) {
+      _log.info("Deletions await confirmation. Nothing is moved to the server trash until the user decided");
+      return;
+    }
     final settledBefore = DateTime.now().subtract(kLocalDeletionSettleDuration);
     var remoteIds = await _localDeletionRepository.getPending(ownerId, settledBefore: settledBefore);
     if (remoteIds.isEmpty) {
@@ -118,7 +122,8 @@ class LocalDeletionFlushService {
 
     _log.fine("Moving ${remoteIds.length} locally deleted assets to the server trash");
     for (final chunk in remoteIds.slices(_kDeletionFlushChunkSize)) {
-      if (_isCancelled || !await _stillEnabled()) {
+      // A sync can hold deletions for confirmation meanwhile, which holds back the whole queue
+      if (_isCancelled || !await _stillEnabled() || await _localDeletionRepository.hasAwaitingConfirmation(ownerId)) {
         return;
       }
       try {
@@ -131,6 +136,7 @@ class LocalDeletionFlushService {
             _assetService.trash,
             onAccepted: _localDeletionRepository.markTrashed,
             onRejected: _localDeletionRepository.deleteByRemoteIds,
+            isHeldBack: () => _localDeletionRepository.hasAwaitingConfirmation(ownerId),
           );
           continue;
         }
@@ -263,15 +269,16 @@ class LocalDeletionFlushService {
   }
 
   /// Sends [remoteIds] one at a time with [send] after the server rejected their batch, and passes each id on to
-  /// [onAccepted] or [onRejected]
+  /// [onAccepted] or [onRejected]. Stops when [isHeldBack] reports that deletions await confirmation
   Future<void> _sendIndividually(
     List<String> remoteIds,
     Future<void> Function(List<String> remoteIds) send, {
     required Future<void> Function(List<String> remoteIds) onAccepted,
     required Future<void> Function(List<String> remoteIds) onRejected,
+    Future<bool> Function()? isHeldBack,
   }) async {
     for (final remoteId in remoteIds) {
-      if (_isCancelled || !await _stillEnabled()) {
+      if (_isCancelled || !await _stillEnabled() || (await isHeldBack?.call() ?? false)) {
         return;
       }
       try {
