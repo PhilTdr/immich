@@ -21,12 +21,12 @@ defaults:
 jobs:
   build-ios-unsigned:
     name: Build unsigned iOS app
-    runs-on: macos-26
+    runs-on: xcode-27
     timeout-minutes: 120
 
     steps:
-      - name: Select Xcode 26
-        run: sudo xcode-select -s /Applications/Xcode_26.2.app/Contents/Developer
+      - name: Select Xcode 27.1
+        run: sudo xcode-select -s /Applications/Xcode_27.1.app/Contents/Developer
 
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
