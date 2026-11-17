@@ -2,6 +2,7 @@
 
 import 'package:immich_mobile/domain/services/asset.service.dart';
 import 'package:immich_mobile/domain/services/background_worker.service.dart';
+import 'package:immich_mobile/domain/services/device_permission.service.dart';
 import 'package:immich_mobile/domain/services/partner.service.dart';
 import 'package:immich_mobile/domain/services/remote_album.service.dart';
 import 'package:immich_mobile/domain/services/store.service.dart';
@@ -47,6 +48,8 @@ class MockGCastService extends Mock implements GCastService {}
 class MockForegroundUploadService extends Mock implements ForegroundUploadService {}
 
 class MockServerInfoService extends Mock implements ServerInfoService {}
+
+class MockDevicePermissionService extends Mock implements DevicePermissionService {}
 
 class MockCleanupService extends Mock implements CleanupService {}
 

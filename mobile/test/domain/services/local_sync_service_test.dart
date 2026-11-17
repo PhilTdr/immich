@@ -72,6 +72,8 @@ void main() {
       trashedLocalAssetRepository: mockTrashedLocalAssetRepository,
       assetMediaRepository: mockAssetMediaRepository,
       permissionRepository: mockPermissionRepository,
+      devicePermissionService: MockDevicePermissionService(),
+      localDeletionRepository: MockLocalDeletionRepository(),
       nativeSyncApi: mockNativeSyncApi,
     );
 

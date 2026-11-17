@@ -3,13 +3,16 @@ import 'dart:async';
 import 'package:collection/collection.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:immich_mobile/data/db/main/dao/local_deletion.dart';
 import 'package:immich_mobile/domain/models/album/local_album.model.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/domain/models/store.model.dart';
+import 'package:immich_mobile/domain/services/device_permission.service.dart';
 import 'package:immich_mobile/domain/utils/cloud_id_resolver.dart';
 import 'package:immich_mobile/entities/store.entity.dart';
 import 'package:immich_mobile/extensions/platform_extensions.dart';
 import 'package:immich_mobile/infrastructure/repositories/local_album.repository.dart';
+import 'package:immich_mobile/infrastructure/repositories/settings.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/trashed_local_asset.repository.dart';
 import 'package:immich_mobile/platform/native_sync_api.g.dart';
 import 'package:immich_mobile/repositories/asset_media.repository.dart';
@@ -19,6 +22,15 @@ import 'package:immich_mobile/utils/diff.dart';
 import 'package:logging/logging.dart';
 
 const String _kSyncCancelledCode = "SYNC_CANCELLED";
+const int _kDeletionConfirmationMinAssets = 50;
+
+typedef _DeletionSync = ({
+  String ownerId,
+  List<String> smartAlbumIds,
+  List<String> backupAlbumIds,
+  Set<String> checkedLocalIds,
+  Set<String> queuedRemoteIds,
+});
 
 class LocalSyncService {
   final LocalAlbumRepository _localAlbumRepository;
@@ -26,8 +38,11 @@ class LocalSyncService {
   final TrashedLocalAssetRepository _trashedLocalAssetRepository;
   final AssetMediaRepository _assetMediaRepository;
   final DevicePermissionRepository _permissionRepository;
+  final DevicePermissionService _devicePermissionService;
+  final LocalDeletionRepository _localDeletionRepository;
   final Completer<void>? _cancellation;
   final Logger _log = Logger("DeviceSyncService");
+  _DeletionSync? _deletionSync;
 
   LocalSyncService({
     required this._localAlbumRepository,
@@ -35,6 +50,8 @@ class LocalSyncService {
     required this._trashedLocalAssetRepository,
     required this._assetMediaRepository,
     required this._permissionRepository,
+    required this._devicePermissionService,
+    required this._localDeletionRepository,
     this._cancellation,
   }) {
     unawaited(_cancellation?.future.then((_) => _nativeSyncApi.cancelSync().onError(_log.warning)));
@@ -76,6 +93,21 @@ class LocalSyncService {
       _log.fine("Delta deleted: ${delta.deletes.length}");
 
       final deviceAlbums = await _nativeSyncApi.getAlbums();
+      await _startDeletionSync(deviceAlbums);
+
+      // Deleted and updated in one delta means restored, e.g. from Recently Deleted
+      final updatedIds = {for (final asset in delta.updates) asset.id};
+      // updateAll and processDelta remove the rows and album links that this needs
+      await _queueRemovedAssets(
+        delta.deletes.toSet().difference(updatedIds),
+        verifyOnDevice: CurrentPlatform.isAndroid,
+      );
+      // An updated asset may have been moved out of the backup albums
+      await _queueRemovedAssets(updatedIds);
+      if (CurrentPlatform.isAndroid) {
+        await _queueAssetsOfRemovedAlbums(deviceAlbums);
+      }
+
       await _localAlbumRepository.updateAll(deviceAlbums.toLocalAlbums());
       final newAssets = delta.updates.toLocalAssets();
       await _localAlbumRepository.processDelta(
@@ -94,6 +126,9 @@ class LocalSyncService {
             return;
           }
           final deviceIds = await _nativeSyncApi.getAssetIdsForAlbum(album.id);
+          if (deviceIds.isNotEmpty) {
+            await _queueRemovedAlbumAssets(album.id, keptIds: deviceIds);
+          }
           await _localAlbumRepository.syncDeletes(album.id, deviceIds);
         }
       }
@@ -117,6 +152,7 @@ class LocalSyncService {
 
         await _resolveCloudIds(newAssets);
       }
+      await _finishDeletionSync();
       await _nativeSyncApi.checkpointSync();
     } on PlatformException catch (e, s) {
       if (e.code == _kSyncCancelledCode) {
@@ -137,6 +173,7 @@ class LocalSyncService {
       final Stopwatch stopwatch = Stopwatch()..start();
 
       final deviceAlbums = await _nativeSyncApi.getAlbums();
+      await _startDeletionSync(deviceAlbums);
       final dbAlbums = await _localAlbumRepository.getAll(sortBy: {SortLocalAlbumsBy.id});
 
       await diffSortedLists(
@@ -148,6 +185,7 @@ class LocalSyncService {
         onlySecond: addAlbum,
       );
 
+      await _finishDeletionSync();
       await _nativeSyncApi.checkpointSync();
       stopwatch.stop();
       _log.info("Full device sync took - ${stopwatch.elapsedMilliseconds}ms");
@@ -184,6 +222,7 @@ class LocalSyncService {
   Future<void> removeAlbum(LocalAlbum a) async {
     _log.fine("Removing device album ${a.name}");
     try {
+      await _queueRemovedAlbumAssets(a.id);
       // Asset deletion is handled in the repository
       await _localAlbumRepository.deleteAlbum(a.id);
     } catch (e, s) {
@@ -283,6 +322,7 @@ class LocalSyncService {
 
       if (deviceAlbum.assetCount == 0) {
         _log.fine("Device album ${deviceAlbum.name} is empty. Removing assets from DB.");
+        await _queueRemovedAssets(assetsInDb.map((a) => a.id));
         await _localAlbumRepository.upsert(
           deviceAlbum.copyWith(backupSelection: dbAlbum.backupSelection),
           toDelete: assetsInDb.map((a) => a.id),
@@ -332,6 +372,7 @@ class LocalSyncService {
         return true;
       }
 
+      await _queueRemovedAssets(assetsToDelete);
       await _localAlbumRepository.upsert(updatedDeviceAlbum, toUpsert: assetsToUpsert, toDelete: assetsToDelete);
       await _resolveCloudIds(assetsToUpsert);
 
@@ -367,6 +408,117 @@ class LocalSyncService {
 
   bool _albumsEqual(LocalAlbum a, LocalAlbum b) {
     return a.name == b.name && a.assetCount == b.assetCount && a.updatedAt.isAtSameMomentAs(b.updatedAt);
+  }
+
+  bool get _syncLocalDeletionsEnabled => SettingsRepository.instance.appConfig.backup.syncLocalDeletions;
+
+  bool get _syncLocalDeletionsInIosSharedAlbums =>
+      SettingsRepository.instance.appConfig.backup.syncLocalDeletionsInIosSharedAlbums;
+
+  // The settings page writes in another isolate
+  Future<bool> _stillEnabled() async {
+    await SettingsRepository.instance.refresh();
+    return _syncLocalDeletionsEnabled;
+  }
+
+  Future<void> _startDeletionSync(List<PlatformAlbum> deviceAlbums) async {
+    _deletionSync = null;
+    final ownerId = Store.tryGet(StoreKey.currentUser)?.id;
+    // Limited access hides assets, which would look deleted
+    if (!_syncLocalDeletionsEnabled || ownerId == null || await _devicePermissionService.galleryStatus() != .granted) {
+      return;
+    }
+
+    _deletionSync = (
+      ownerId: ownerId,
+      smartAlbumIds: [
+        for (final album in deviceAlbums)
+          if (album.isSmart) album.id,
+      ],
+      backupAlbumIds: [for (final album in await _localAlbumRepository.getBackupAlbums()) album.id],
+      checkedLocalIds: {},
+      queuedRemoteIds: {},
+    );
+  }
+
+  Future<void> _finishDeletionSync() async {
+    if (_deletionSync != null) {
+      await _localDeletionRepository.deleteExclusionsOfRemovedAssets();
+    }
+  }
+
+  Future<void> _queueAssetsOfRemovedAlbums(List<PlatformAlbum> deviceAlbums) async {
+    if (_deletionSync == null) {
+      return;
+    }
+
+    final deviceAlbumIds = {for (final album in deviceAlbums) album.id};
+    for (final album in await _localAlbumRepository.getAll()) {
+      if (!deviceAlbumIds.contains(album.id)) {
+        await _queueRemovedAlbumAssets(album.id);
+      }
+    }
+  }
+
+  Future<void> _queueRemovedAlbumAssets(String albumId, {Iterable<String> keptIds = const []}) async {
+    if (_deletionSync == null) {
+      return;
+    }
+
+    final assetIds = await _localAlbumRepository.getAssetIds(albumId);
+    await _queueRemovedAssets(assetIds.toSet().difference(keptIds.toSet()));
+  }
+
+  Future<void> _queueRemovedAssets(Iterable<String> localIds, {bool verifyOnDevice = true}) async {
+    final deletionSync = _deletionSync;
+    if (deletionSync == null) {
+      return;
+    }
+
+    final uncheckedIds = localIds.where(deletionSync.checkedLocalIds.add).toList();
+    if (uncheckedIds.isEmpty) {
+      return;
+    }
+
+    var removed = await _localDeletionRepository.getBackedUp(
+      deletionSync.ownerId,
+      uncheckedIds,
+      includeIosSharedAlbums: _syncLocalDeletionsInIosSharedAlbums,
+      smartAlbumIds: deletionSync.smartAlbumIds,
+    );
+    if (verifyOnDevice && removed.isNotEmpty) {
+      final missing = (await _nativeSyncApi.getMissingAssetIds([
+        for (final asset in removed) PlatformAssetFile(id: asset.localId, name: asset.name, albumId: asset.albumId),
+      ], deletionSync.backupAlbumIds)).toSet();
+      if (missing.length < removed.length) {
+        _log.info("${removed.length - missing.length} backed-up assets did not leave the backup albums");
+      }
+      removed = [
+        for (final asset in removed)
+          if (missing.contains(asset.localId)) asset,
+      ];
+    }
+    if (removed.isEmpty || !await _stillEnabled()) {
+      return;
+    }
+
+    // The shared albums option may have been turned off as well
+    removed = removed.where((asset) => _syncLocalDeletionsInIosSharedAlbums || !asset.inIosSharedAlbum).toList();
+
+    final ownerId = deletionSync.ownerId;
+    final queued = deletionSync.queuedRemoteIds;
+    final wasReached = queued.length >= _kDeletionConfirmationMinAssets;
+    queued.addAll(removed.map((asset) => asset.remoteId));
+    final isReached = queued.length >= _kDeletionConfirmationMinAssets;
+    await _localDeletionRepository.upsert(
+      ownerId,
+      removed,
+      awaitingConfirmation: isReached || await _localDeletionRepository.hasAwaitingConfirmation(ownerId),
+    );
+    if (isReached && !wasReached) {
+      _log.warning("${queued.length} backed-up assets vanished at once. Holding them for confirmation");
+      await _localDeletionRepository.holdForConfirmation(queued);
+    }
   }
 
   Future<void> _syncTrashedAssets() async {
