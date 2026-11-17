@@ -3,6 +3,7 @@ import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:immich_mobile/data/db/main/database.dart';
 import 'package:immich_mobile/data/db/main/table/local/album.drift.dart';
+import 'package:immich_mobile/data/db/main/table/local/deletion.drift.dart';
 import 'package:immich_mobile/data/db/main/table/remote/album.drift.dart';
 import 'package:immich_mobile/data/db/main/table/remote/asset.drift.dart';
 import 'package:immich_mobile/data/db/main/table/remote/exif.drift.dart';
@@ -275,6 +276,17 @@ void main() {
       expect(after.linkedRemoteAlbumId, isNull);
       expect(after.name, equals('Camera'));
       expect(after.backupSelection, equals(BackupSelection.none));
+    });
+
+    test('preserves the local deletion queue', () async {
+      await db.localDeletionEntity.insertOne(
+        LocalDeletionEntityCompanion.insert(remoteId: 'remote-1', checksum: 'checksum-1', ownerId: 'user-1'),
+      );
+
+      await sut.reset();
+
+      final rows = await db.localDeletionEntity.select().get();
+      expect(rows.map((row) => row.remoteId), ['remote-1'], reason: 'pending deletions must survive a reset');
     });
   });
 
