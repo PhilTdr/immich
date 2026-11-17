@@ -64,13 +64,25 @@ class PlatformAlbum {
   final bool isCloud;
   final int assetCount;
 
+  // iOS Only: smart albums like Recents or Selfies
+  final bool isSmart;
+
   const PlatformAlbum({
     required this.id,
     required this.name,
     this.updatedAt,
     this.isCloud = false,
     this.assetCount = 0,
+    this.isSmart = false,
   });
+}
+
+class PlatformAssetFile {
+  final String id;
+  final String name;
+  final String? albumId;
+
+  const PlatformAssetFile({required this.id, required this.name, this.albumId});
 }
 
 class SyncDelta {
@@ -156,4 +168,7 @@ abstract class NativeSyncApi {
 
   @TaskQueue(type: TaskQueueType.serialBackgroundThread)
   List<CloudIdResult> getCloudIdForAssetIds(List<String> assetIds);
+
+  @TaskQueue(type: TaskQueueType.serialBackgroundThread)
+  List<String> getMissingAssetIds(List<PlatformAssetFile> assets);
 }

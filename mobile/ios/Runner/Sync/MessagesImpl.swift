@@ -125,7 +125,8 @@ class NativeSyncApiImpl: ImmichPlugin, NativeSyncApi, FlutterPlugin {
           name: album.localizedTitle ?? album.localIdentifier,
           updatedAt: nil,
           isCloud: isCloud,
-          assetCount: Int64(assets.count)
+          assetCount: Int64(assets.count),
+          isSmart: album.assetCollectionType == .smartAlbum
         )
         
         if let firstAsset = assets.firstObject {
@@ -499,5 +500,17 @@ class NativeSyncApiImpl: ImmichPlugin, NativeSyncApi, FlutterPlugin {
       }
     }
     return mappings;
+  }
+
+  func getMissingAssetIds(assets: [PlatformAssetFile]) throws -> [String] {
+    let options = PHFetchOptions()
+    options.includeHiddenAssets = true
+    // Assets of iCloud shared albums must count as present too
+    options.includeAssetSourceTypes = [.typeUserLibrary, .typeCloudShared, .typeiTunesSynced]
+    var missing = Set(assets.map(\.id))
+    PHAsset.fetchAssets(withLocalIdentifiers: Array(missing), options: options).enumerateObjects { (asset, _, _) in
+      missing.remove(asset.localIdentifier)
+    }
+    return Array(missing)
   }
 }

@@ -53,6 +53,7 @@ class NativeSyncApiImpl30(context: Context) : NativeSyncApiImplBase(context), Na
       putString(SHARED_PREF_MEDIA_STORE_GEN_KEY, Json.encodeToString(genMap))
       apply()
     }
+    saveAlbumFolders()
   }
 
   override fun getMediaChanges(callback: (Result<SyncDelta>) -> Unit) {

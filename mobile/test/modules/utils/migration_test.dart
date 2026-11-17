@@ -33,9 +33,9 @@ void main() {
     await ctx.db.delete(ctx.db.localAssetEntity).go();
     await ctx.db.delete(ctx.db.trashedLocalAssetEntity).go();
     when(() => permissionApi.hasManageMediaPermission()).thenAnswer((_) async => true);
-    when(
-      () => nativeSyncApi.getAlbums(),
-    ).thenAnswer((_) async => [PlatformAlbum(id: 'album', name: 'album', isCloud: false, assetCount: 1)]);
+    when(() => nativeSyncApi.getAlbums()).thenAnswer(
+      (_) async => [PlatformAlbum(id: 'album', name: 'album', isCloud: false, assetCount: 1, isSmart: false)],
+    );
     when(() => nativeSyncApi.getAssetsForAlbum('album')).thenAnswer((_) async => []);
     when(() => nativeSyncApi.getTrashedAssets()).thenAnswer((_) async => {});
   });

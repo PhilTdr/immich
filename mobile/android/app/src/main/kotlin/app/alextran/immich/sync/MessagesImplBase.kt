@@ -6,6 +6,7 @@ import android.content.Context
 import android.database.Cursor
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.ext.SdkExtensions
 import android.provider.MediaStore
 import android.util.Base64
@@ -28,6 +29,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.serialization.json.Json
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
@@ -48,6 +50,12 @@ open class NativeSyncApiImplBase(context: Context) : ImmichPlugin(), ActivityAwa
   private var hashTask: Job? = null
   private var syncJob: Job? = null
   private val mediaTrashDelegate = MediaTrashDelegate(ctx)
+
+  private val prefs = ctx.getSharedPreferences(SHARED_PREF_NAME, Context.MODE_PRIVATE)
+
+  // The folder of each album that getAlbums listed, empty if its files are in several folders
+  @Volatile
+  private var albumFolders: Map<String, String>? = null
 
   companion object {
     private const val MAX_CONCURRENT_HASH_OPERATIONS = 16
@@ -99,6 +107,12 @@ open class NativeSyncApiImplBase(context: Context) : ImmichPlugin(), ActivityAwa
     }.toTypedArray()
 
     const val HASH_BUFFER_SIZE = 2 * 1024 * 1024
+
+    // Keep IN clauses below SQLite's default bound-variable limit (999)
+    private const val SQLITE_MAX_VARIABLE_NUMBER = 900
+
+    private const val SHARED_PREF_NAME = "Immich::MediaManager"
+    private const val SHARED_PREF_ALBUM_FOLDERS_KEY = "MediaStore::albumFolders"
 
     // _special_format: added in API level 37, also in S Extensions 21+
     // https://developer.android.com/reference/android/provider/MediaStore.Files.FileColumns#SPECIAL_FORMAT
@@ -306,11 +320,13 @@ open class NativeSyncApiImplBase(context: Context) : ImmichPlugin(), ActivityAwa
   private suspend fun getAlbums(): List<PlatformAlbum> {
     val albums = mutableListOf<PlatformAlbum>()
     val albumsCount = mutableMapOf<String, Int>()
+    val folders = mutableMapOf<String, String>()
 
     val projection = arrayOf(
       MediaStore.Files.FileColumns.BUCKET_ID,
       MediaStore.Files.FileColumns.BUCKET_DISPLAY_NAME,
       MediaStore.Files.FileColumns.DATE_MODIFIED,
+      MediaStore.MediaColumns.DATA,
     )
     val selection =
       "(${MediaStore.Files.FileColumns.BUCKET_ID} IS NOT NULL) AND $MEDIA_SELECTION"
@@ -329,10 +345,18 @@ open class NativeSyncApiImplBase(context: Context) : ImmichPlugin(), ActivityAwa
         cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.BUCKET_DISPLAY_NAME)
       val dateModified =
         cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DATE_MODIFIED)
+      val dataColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATA)
 
       while (cursor.moveToNext()) {
         currentCoroutineContext().ensureActive()
         val id = cursor.getString(bucketIdColumn)
+
+        // BUCKET_ID hashes the lowercased path, so rows of one folder may spell it in another case
+        val folder = cursor.getStringOrNull(dataColumn)?.let { File(it).parent }.orEmpty()
+        val albumFolder = folders.putIfAbsent(id, folder)
+        if (albumFolder != null && !albumFolder.equals(folder, ignoreCase = true)) {
+          folders[id] = ""
+        }
 
         val count = albumsCount.getOrDefault(id, 0)
         if (count != 0) {
@@ -343,14 +367,57 @@ open class NativeSyncApiImplBase(context: Context) : ImmichPlugin(), ActivityAwa
         // MediaStore might return null for bucket name (commonly for the Root Directory), so default to "Internal Storage"
         val name = cursor.getStringOrNull(bucketNameColumn) ?: "Internal Storage"
         val updatedAt = cursor.getLong(dateModified)
-        albums.add(PlatformAlbum(id, name, updatedAt, false, 0))
+        albums.add(PlatformAlbum(id, name, updatedAt, false, 0, false))
         albumsCount[id] = 1
       }
     }
+    albumFolders = folders
 
     return albums.map { it.copy(assetCount = albumsCount[it.id]?.toLong() ?: 0) }
       .sortedBy { it.id }
   }
+
+  protected fun saveAlbumFolders() {
+    val folders = albumFolders ?: return
+    prefs.edit().apply {
+      putString(SHARED_PREF_ALBUM_FOLDERS_KEY, Json.encodeToString(folders))
+      apply()
+    }
+  }
+
+  fun getMissingAssetIds(assets: List<PlatformAssetFile>): List<String> {
+    // An album that is gone from the device keeps the folder of the last sync
+    val saved = prefs.getString(SHARED_PREF_ALBUM_FOLDERS_KEY, null)?.let {
+      Json.decodeFromString<Map<String, String>>(it)
+    } ?: emptyMap()
+    val folders = saved + albumFolders.orEmpty()
+    fun folderOf(asset: PlatformAssetFile) = folders[asset.albumId].orEmpty()
+    fun mounted(paths: List<String>) = paths.distinct().filter {
+      it.isNotEmpty() && Environment.getExternalStorageState(File(it)) == Environment.MEDIA_MOUNTED
+    }
+
+    // A file is not gone if its volume is ejected or if it is still in its folder under a new id.
+    // The volumes are checked before and after, as one may be ejected or mounted meanwhile
+    val mountedBefore = mounted(assets.map(::folderOf))
+    val gone = assets.filter { folderOf(it) in mountedBefore && !File(folderOf(it), it.name).exists() }
+    val mountedAfter = mounted(gone.map(::folderOf))
+    val ids = gone.filter { folderOf(it) in mountedAfter }.map { it.id }
+    val existing = getExistingAssetIds(ids).toSet()
+    return ids.filterNot { it in existing }
+  }
+
+  private fun getExistingAssetIds(assetIds: List<String>): List<String> =
+    assetIds.chunked(SQLITE_MAX_VARIABLE_NUMBER).flatMap { chunk ->
+      getCursor(
+        MediaStore.VOLUME_EXTERNAL,
+        "${MediaStore.MediaColumns._ID} IN (${chunk.joinToString(",") { "?" }})",
+        chunk.toTypedArray(),
+        arrayOf(MediaStore.MediaColumns._ID)
+      )?.use { cursor ->
+        val idColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+        generateSequence { if (cursor.moveToNext()) cursor.getLong(idColumn).toString() else null }.toList()
+      } ?: error("MediaStore asset existence query failed")
+    }
 
   fun getAssetIdsForAlbum(albumId: String, callback: (Result<List<String>>) -> Unit) {
     runSync(callback) { getAssetIdsForAlbum(albumId) }
