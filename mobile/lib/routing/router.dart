@@ -41,6 +41,7 @@ import 'package:immich_mobile/presentation/pages/album_options.page.dart';
 import 'package:immich_mobile/presentation/pages/archive.page.dart';
 import 'package:immich_mobile/presentation/pages/asset_selection_timeline.page.dart';
 import 'package:immich_mobile/presentation/pages/asset_troubleshoot.page.dart';
+import 'package:immich_mobile/presentation/pages/backup_pending_deletion.page.dart';
 import 'package:immich_mobile/presentation/pages/cleanup_preview.page.dart';
 import 'package:immich_mobile/presentation/pages/create_album.page.dart';
 import 'package:immich_mobile/presentation/pages/dev/main_timeline.page.dart';
@@ -188,6 +189,7 @@ class AppRouter extends RootStackRouter {
     AutoRoute(page: EditImageRoute.page),
     AutoRoute(page: ActivitiesRoute.page, guards: [_authGuard, _duplicateGuard]),
     AutoRoute(page: BackupAssetDetailRoute.page, guards: [_authGuard, _duplicateGuard]),
+    AutoRoute(page: BackupPendingDeletionRoute.page, guards: [_authGuard, _duplicateGuard]),
     AutoRoute(page: AssetTroubleshootRoute.page, guards: [_authGuard, _duplicateGuard]),
     AutoRoute(page: DownloadInfoRoute.page, guards: [_authGuard, _duplicateGuard]),
     AutoRoute(page: CleanupPreviewRoute.page, guards: [_authGuard, _duplicateGuard]),

@@ -6,6 +6,7 @@ import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/constants/constants.dart';
 import 'package:immich_mobile/domain/models/album/local_album.model.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
+import 'package:immich_mobile/domain/models/local_deletion.model.dart';
 import 'package:immich_mobile/extensions/platform_extensions.dart';
 import 'package:immich_mobile/providers/infrastructure/db.provider.dart';
 import 'package:immich_mobile/providers/user.provider.dart';
@@ -298,4 +299,13 @@ final candidateBackupAlbumInfoProvider = FutureProvider.autoDispose.family<List<
       .read(driftProvider)
       .localAssetRepository
       .getSourceAlbums(assetId, backupSelection: BackupSelection.selected);
+});
+
+final pendingDeletionsProvider = StreamProvider.autoDispose<List<PendingDeletion>>((ref) {
+  final userId = ref.watch(currentUserProvider.select((user) => user?.id));
+  if (userId == null) {
+    return Stream.value(const []);
+  }
+
+  return ref.watch(driftProvider).localDeletionRepository.watchPending(userId);
 });
