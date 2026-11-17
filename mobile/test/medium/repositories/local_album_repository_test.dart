@@ -21,6 +21,23 @@ void main() {
     await ctx.dispose();
   });
 
+  group('updateAll', () {
+    test('keeps the stored time of iOS shared albums', () async {
+      final stored = DateTime.utc(2025);
+      final onDevice = DateTime.utc(2026);
+      await ctx.newLocalAlbum(id: 'shared', updatedAt: stored, isIosSharedAlbum: true);
+      await ctx.newLocalAlbum(id: 'library', updatedAt: stored);
+
+      await sut.updateAll([
+        LocalAlbum(id: 'shared', name: 'Shared', updatedAt: onDevice, isIosSharedAlbum: true),
+        LocalAlbum(id: 'library', name: 'Library', updatedAt: onDevice),
+      ]);
+
+      final updatedAt = {for (final album in await sut.getAll()) album.id: album.updatedAt.toUtc()};
+      expect(updatedAt, {'shared': stored, 'library': onDevice});
+    });
+  });
+
   group('upsert', () {
     final album = LocalAlbum(id: 'album', name: 'Camera', updatedAt: DateTime(2024));
 
