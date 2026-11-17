@@ -49,6 +49,7 @@ final hashServiceProvider = Provider((ref) {
     localAssetRepository: db.localAssetRepository,
     nativeSyncApi: ref.watch(nativeSyncApiProvider),
     trashedLocalAssetRepository: db.trashedLocalAssetRepository,
+    localDeletionRepository: db.localDeletionRepository,
     cancellation: ref.watch(cancellationProvider),
   );
 });

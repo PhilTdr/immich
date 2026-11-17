@@ -18,6 +18,7 @@ void main() {
       localAssetRepository: mocks.localAsset.repo,
       nativeSyncApi: mocks.nativeApi.api,
       trashedLocalAssetRepository: mocks.trashedAsset,
+      localDeletionRepository: mocks.localDeletion.repo,
     );
   });
 
@@ -107,6 +108,7 @@ void main() {
           nativeSyncApi: mocks.nativeApi.api,
           batchSize: batchSize,
           trashedLocalAssetRepository: mocks.trashedAsset,
+          localDeletionRepository: mocks.localDeletion.repo,
         );
 
         final album = LocalAlbumFactory.create();
@@ -173,6 +175,17 @@ void main() {
 
         verify(() => mocks.nativeApi.api.hashAssets([asset1.id], allowNetworkAccess: true)).called(1);
         verify(() => mocks.nativeApi.api.hashAssets([asset2.id], allowNetworkAccess: false)).called(1);
+      });
+
+      test('hashes the unhashed copies of deleted files without network access', () async {
+        final copy = LocalAssetFactory.create();
+        when(mocks.localDeletion.getAssetsToHash).thenAnswer((_) async => [copy]);
+        when(mocks.nativeApi.hashAssets).thenAnswer((_) async => [HashResult(assetId: copy.id, hash: 'copy-hash')]);
+
+        await sut.hashAssets();
+
+        verify(() => mocks.nativeApi.api.hashAssets([copy.id], allowNetworkAccess: false)).called(1);
+        verify(() => mocks.localAsset.repo.updateHashes({copy.id: 'copy-hash'})).called(1);
       });
     });
   });

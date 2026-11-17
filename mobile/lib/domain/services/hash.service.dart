@@ -7,6 +7,7 @@ import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/extensions/platform_extensions.dart';
 import 'package:immich_mobile/infrastructure/repositories/local_album.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/local_asset.repository.dart';
+import 'package:immich_mobile/infrastructure/repositories/local_deletion.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/trashed_local_asset.repository.dart';
 import 'package:immich_mobile/platform/native_sync_api.g.dart';
 import 'package:logging/logging.dart';
@@ -18,6 +19,7 @@ class HashService {
   final LocalAlbumRepository _localAlbumRepository;
   final LocalAssetRepository _localAssetRepository;
   final TrashedLocalAssetRepository _trashedLocalAssetRepository;
+  final LocalDeletionRepository _localDeletionRepository;
   final NativeSyncApi _nativeSyncApi;
   final Completer<void>? _cancellation;
   final _log = Logger('HashService');
@@ -26,6 +28,7 @@ class HashService {
     required this._localAlbumRepository,
     required this._localAssetRepository,
     required this._trashedLocalAssetRepository,
+    required this._localDeletionRepository,
     required this._nativeSyncApi,
     this._cancellation,
     int? batchSize,
@@ -43,6 +46,13 @@ class HashService {
     try {
       // Migrate hashes from cloud ID to local ID so we don't have to re-hash them
       await _localAssetRepository.reconcileHashesFromCloudId();
+
+      // A file moved out of the backup albums, e.g. to the SD card, keeps its server copy once it is hashed
+      final copiesToHash = await _localDeletionRepository.getAssetsToHash();
+      if (copiesToHash.isNotEmpty) {
+        final pseudoAlbum = LocalAlbum(id: '-pseudoAlbum', name: 'Copies', updatedAt: DateTime.now());
+        await _hashAssets(pseudoAlbum, copiesToHash);
+      }
 
       // Sorted by backupSelection followed by isCloud
       final localAlbums = await _localAlbumRepository.getBackupAlbums();
