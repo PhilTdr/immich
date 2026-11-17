@@ -96,5 +96,17 @@ void main() {
       final ids = result.values.expand((assets) => assets).map((a) => a.id);
       expect(ids, contains(localId));
     });
+
+    test('does not trash a file this device deleted and the user brought back', () async {
+      const checksum = 'restored-on-device';
+      final localId = await addLocalAssetToBackupAlbum(checksum);
+      final remote = await ctx.newRemoteAsset(ownerId: userId, checksum: checksum, deletedAt: DateTime(2020, 1, 1));
+      await ctx.newLocalDeletion(remoteId: remote.id, ownerId: userId, trashedAt: DateTime(2020, 1, 1));
+
+      final result = await sut.getToTrash();
+
+      final ids = result.values.expand((assets) => assets).map((a) => a.id);
+      expect(ids, isNot(contains(localId)));
+    });
   });
 }

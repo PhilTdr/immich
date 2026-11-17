@@ -8,6 +8,7 @@ import 'package:immich_mobile/constants/constants.dart';
 import 'package:immich_mobile/data/data_controller.dart';
 import 'package:immich_mobile/data/store.dart';
 import 'package:immich_mobile/domain/services/hash.service.dart';
+import 'package:immich_mobile/domain/services/local_deletion_flush.service.dart';
 import 'package:immich_mobile/domain/services/local_sync.service.dart';
 import 'package:immich_mobile/domain/services/log.service.dart';
 import 'package:immich_mobile/domain/services/sync_stream.service.dart';
@@ -67,6 +68,7 @@ class BackgroundWorkerBgService extends BackgroundWorkerFlutterApi {
   late LocalSyncService _localSyncService;
   late SyncStreamService _remoteSyncService;
   late HashService _hashService;
+  late LocalDeletionFlushService _localDeletionFlushService;
 
   bool _isCleanedUp = false;
 
@@ -86,6 +88,7 @@ class BackgroundWorkerBgService extends BackgroundWorkerFlutterApi {
     _localSyncService = ref.read(localSyncServiceProvider);
     _remoteSyncService = ref.read(syncStreamServiceProvider);
     _hashService = ref.read(hashServiceProvider);
+    _localDeletionFlushService = ref.read(localDeletionFlushServiceProvider);
     BackgroundWorkerFlutterApi.setUp(this);
   }
 
@@ -159,7 +162,7 @@ class BackgroundWorkerBgService extends BackgroundWorkerFlutterApi {
         _handleBackup(
           remoteSync: remoteSync.then((ok) => ok && !_cancellationToken.isCompleted).catchError((_) => false),
         ),
-      ]);
+      ]).then<dynamic>((_) => _localDeletionFlushService.flush());
       if (budget != null) {
         await all.timeout(
           budget,
@@ -323,17 +326,23 @@ class BackgroundWorkerBgService extends BackgroundWorkerFlutterApi {
       return isSuccess;
     }
 
+    var hashTimedOut = false;
     var hashFuture = _hashService.hashAssets();
     if (hashTimeout != null) {
       hashFuture = hashFuture.timeout(
         hashTimeout,
         onTimeout: () {
+          hashTimedOut = true;
           // Consume cancellation errors as we want to continue processing
         },
       );
     }
 
     await hashFuture;
+    // Without their hash, moved files would count as deleted
+    if (!_isCleanedUp && !hashTimedOut) {
+      await _localDeletionFlushService.flush();
+    }
     return isSuccess;
   }
 }

@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:immich_mobile/constants/enums.dart';
+import 'package:immich_mobile/domain/models/album/local_album.model.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/infrastructure/repositories/local_asset.repository.dart';
 import 'package:immich_mobile/utils/option.dart';
@@ -632,6 +633,30 @@ void main() {
       await sut.reconcileHashesFromCloudId();
       final updated = await sut.getById(localAsset.id);
       expect(updated?.checksum, isNull);
+    });
+  });
+
+  group('getAssetsFromBackupAlbums', () {
+    late String userId;
+
+    setUp(() async {
+      userId = (await ctx.newUser()).id;
+    });
+
+    test('skips the file of an asset this device deleted and the user brought back', () async {
+      final album = await ctx.newLocalAlbum(backupSelection: BackupSelection.selected);
+      final remoteIds = <String>[];
+      for (final id in ['trashed-on-server', 'trashed-by-this-device']) {
+        await ctx.newLocalAsset(id: id, checksum: 'checksum-$id');
+        await ctx.newLocalAlbumAsset(albumId: album.id, assetId: id);
+        final remote = await ctx.newRemoteAsset(ownerId: userId, checksum: 'checksum-$id', deletedAt: DateTime(2024));
+        remoteIds.add(remote.id);
+      }
+      await ctx.newLocalDeletion(remoteId: remoteIds.last, ownerId: userId, trashedAt: DateTime(2024));
+
+      final result = await sut.getAssetsFromBackupAlbums(remoteIds);
+
+      expect(result.values.expand((assets) => assets).map((a) => a.id), ['trashed-on-server']);
     });
   });
 

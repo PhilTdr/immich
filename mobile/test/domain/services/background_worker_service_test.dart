@@ -12,6 +12,7 @@ import 'package:immich_mobile/data/db/main/database.dart';
 import 'package:immich_mobile/domain/models/settings_key.dart';
 import 'package:immich_mobile/domain/services/background_worker.service.dart';
 import 'package:immich_mobile/domain/services/hash.service.dart';
+import 'package:immich_mobile/domain/services/local_deletion_flush.service.dart';
 import 'package:immich_mobile/domain/services/local_sync.service.dart';
 import 'package:immich_mobile/domain/services/sync_stream.service.dart';
 import 'package:immich_mobile/infrastructure/repositories/settings.repository.dart';
@@ -32,10 +33,14 @@ class MockSyncStreamService extends Mock implements SyncStreamService {}
 
 class MockHashService extends Mock implements HashService {}
 
+class MockLocalDeletionFlushService extends Mock implements LocalDeletionFlushService {}
+
 void main() {
   late BackgroundWorkerBgService sut;
   late MockSyncStreamService mockRemoteSyncService;
   late MockBackgroundUploadService mockBackgroundUploadService;
+  late MockLocalDeletionFlushService mockLocalDeletionFlushService;
+  late MockHashService mockHashService;
   late Drift db;
 
   setUpAll(() async {
@@ -54,13 +59,15 @@ void main() {
 
   setUp(() {
     final mockLocalSyncService = MockLocalSyncService();
-    final mockHashService = MockHashService();
+    mockHashService = MockHashService();
+    mockLocalDeletionFlushService = MockLocalDeletionFlushService();
     final mockUserService = MockUserService();
     mockRemoteSyncService = MockSyncStreamService();
     mockBackgroundUploadService = MockBackgroundUploadService();
 
     when(() => mockLocalSyncService.sync()).thenAnswer((_) async {});
     when(() => mockHashService.hashAssets()).thenAnswer((_) async {});
+    when(() => mockLocalDeletionFlushService.flush()).thenAnswer((_) async {});
     when(() => mockUserService.tryGetMyUser()).thenReturn(UserStub.admin);
     when(() => mockUserService.watchMyUser()).thenAnswer((_) => const Stream.empty());
     when(() => mockBackgroundUploadService.getActiveTasks(kBackupGroup)).thenAnswer((_) async => []);
@@ -74,11 +81,41 @@ void main() {
         localSyncServiceProvider.overrideWithValue(mockLocalSyncService),
         syncStreamServiceProvider.overrideWithValue(mockRemoteSyncService),
         hashServiceProvider.overrideWithValue(mockHashService),
+        localDeletionFlushServiceProvider.overrideWithValue(mockLocalDeletionFlushService),
         currentUserProvider.overrideWith((ref) => CurrentUserProvider(mockUserService)),
         foregroundUploadServiceProvider.overrideWithValue(MockForegroundUploadService()),
         backgroundUploadServiceProvider.overrideWithValue(mockBackgroundUploadService),
       ],
     );
+  });
+
+  group('onAndroidUpload', () {
+    setUp(() {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      addTearDown(() => debugDefaultTargetPlatformOverride = TargetPlatform.iOS);
+      when(() => mockRemoteSyncService.sync()).thenAnswer((_) async => true);
+    });
+
+    test('flushes local deletions', () {
+      fakeAsync((async) {
+        unawaited(sut.onAndroidUpload(null));
+        async.flushMicrotasks();
+
+        verify(() => mockLocalDeletionFlushService.flush()).called(1);
+      });
+    });
+
+    test('does not flush local deletions when hashing timed out', () {
+      fakeAsync((async) {
+        when(() => mockHashService.hashAssets()).thenAnswer((_) => Completer<void>().future);
+
+        unawaited(sut.onAndroidUpload(null));
+        async.elapse(const Duration(minutes: 3));
+        async.flushMicrotasks();
+
+        verifyNever(() => mockLocalDeletionFlushService.flush());
+      });
+    });
   });
 
   group('onIosUpload', () {
@@ -101,6 +138,14 @@ void main() {
       await sut.onIosUpload(true, 20);
 
       verifyNever(() => mockBackgroundUploadService.uploadBackupCandidates(any()));
+    });
+
+    test('flushes local deletions', () async {
+      when(() => mockRemoteSyncService.sync()).thenAnswer((_) async => true);
+
+      await sut.onIosUpload(true, 20);
+
+      verify(() => mockLocalDeletionFlushService.flush()).called(1);
     });
 
     test('does not list a new batch when the run times out before the remote sync finished', () {

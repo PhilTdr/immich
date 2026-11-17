@@ -128,6 +128,7 @@ class AppLifeCycleNotifier extends StateNotifier<AppLifeCycleEnum> {
     unawaited(backgroundManager.cancelResumeSyncs());
 
     final isAlbumLinkedSyncEnable = _ref.read(appConfigProvider).backup.syncAlbums;
+    final isLocalDeletionSyncEnabled = _ref.read(appConfigProvider).backup.syncLocalDeletions;
 
     try {
       bool syncSuccess = false;
@@ -157,6 +158,10 @@ class AppLifeCycleNotifier extends StateNotifier<AppLifeCycleEnum> {
 
       if (isAlbumLinkedSyncEnable) {
         await _safeRun(backgroundManager.syncLinkedAlbum, "syncLinkedAlbum");
+      }
+
+      if (isLocalDeletionSyncEnabled) {
+        await _safeRun(backgroundManager.flushLocalDeletions, "flushLocalDeletions");
       }
     } catch (e, stackTrace) {
       _log.severe("Error during background sync", e, stackTrace);
