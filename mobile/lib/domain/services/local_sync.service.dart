@@ -48,7 +48,14 @@ class LocalSyncService {
       if (CurrentPlatform.isAndroid && Store.get(StoreKey.manageLocalMediaAndroid, false)) {
         final hasPermission = await _permissionRepository.hasManageMediaPermission();
         if (hasPermission) {
-          await _syncTrashedAssets();
+          try {
+            await _syncTrashedAssets();
+          } catch (e, s) {
+            if (e is PlatformException && e.code == _kSyncCancelledCode) {
+              rethrow;
+            }
+            _log.severe("Error syncing trashed assets", e, s);
+          }
         } else {
           _log.warning("syncTrashedAssets cannot proceed because MANAGE_MEDIA permission is missing");
         }

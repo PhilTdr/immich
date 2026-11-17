@@ -1,6 +1,7 @@
 import 'package:drift/drift.dart' as drift;
 import 'package:drift/native.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:immich_mobile/data/db/main/database.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
@@ -104,6 +105,26 @@ void main() {
       await sut.sync();
 
       verifyNever(() => mockNativeSyncApi.getTrashedAssets());
+    });
+
+    test('continues the device sync when syncTrashedAssets fails', () async {
+      await Store.put(StoreKey.manageLocalMediaAndroid, true);
+      when(() => mockPermissionRepository.hasManageMediaPermission()).thenAnswer((_) async => true);
+      when(() => mockNativeSyncApi.getTrashedAssets()).thenThrow(PlatformException(code: 'deleteWithIds failed'));
+
+      await sut.sync();
+
+      verify(() => mockNativeSyncApi.getMediaChanges()).called(1);
+    });
+
+    test('aborts the device sync when syncTrashedAssets reports cancellation', () async {
+      await Store.put(StoreKey.manageLocalMediaAndroid, true);
+      when(() => mockPermissionRepository.hasManageMediaPermission()).thenAnswer((_) async => true);
+      when(() => mockNativeSyncApi.getTrashedAssets()).thenThrow(PlatformException(code: 'SYNC_CANCELLED'));
+
+      await sut.sync();
+
+      verifyNever(() => mockNativeSyncApi.getMediaChanges());
     });
 
     test('skips syncTrashedAssets on non-Android platforms', () async {
