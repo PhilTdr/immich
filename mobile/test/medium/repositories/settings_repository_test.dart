@@ -153,4 +153,22 @@ void main() {
       await expectation;
     });
   });
+
+  group('dispose', () {
+    test('lets the next ensureInitialized bind to another database', () async {
+      final other = MediumRepositoryContext();
+      addTearDown(() async {
+        SettingsRepository.instance.dispose();
+        sut = await SettingsRepository.ensureInitialized(ctx.db);
+        await other.dispose();
+      });
+
+      sut.dispose();
+      final rebound = await SettingsRepository.ensureInitialized(other.db);
+      await rebound.write(.themeMode, ThemeMode.dark);
+
+      expect(await other.db.select(other.db.settingsEntity).get(), hasLength(1));
+      expect(await ctx.db.select(ctx.db.settingsEntity).get(), isEmpty);
+    });
+  });
 }
