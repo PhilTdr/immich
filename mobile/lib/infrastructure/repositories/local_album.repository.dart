@@ -158,7 +158,8 @@ class LocalAlbumRepository extends DatabaseAccessor<Drift> with $LocalAlbumRepos
               (old) => LocalAlbumEntityCompanion(
                 id: companion.id,
                 name: companion.name,
-                updatedAt: companion.updatedAt,
+                // Stored by the album sync, which would otherwise skip the album as unchanged
+                updatedAt: album.isIosSharedAlbum ? const Value.absent() : companion.updatedAt,
                 isIosSharedAlbum: companion.isIosSharedAlbum,
                 marker_: companion.marker_,
               ),
