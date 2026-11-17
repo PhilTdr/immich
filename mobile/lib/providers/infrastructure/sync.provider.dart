@@ -4,6 +4,7 @@ import 'package:immich_mobile/domain/services/local_sync.service.dart';
 import 'package:immich_mobile/domain/services/sync_stream.service.dart';
 import 'package:immich_mobile/infrastructure/repositories/sync_api.repository.dart';
 import 'package:immich_mobile/providers/api.provider.dart';
+import 'package:immich_mobile/providers/gallery_permission.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/cancel.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/db.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/platform.provider.dart';
@@ -34,6 +35,8 @@ final localSyncServiceProvider = Provider((ref) {
     trashedLocalAssetRepository: db.trashedLocalAssetRepository,
     assetMediaRepository: ref.watch(assetMediaRepositoryProvider),
     permissionRepository: ref.watch(permissionRepositoryProvider),
+    devicePermissionService: ref.watch(galleryPermissionServiceProvider),
+    localDeletionRepository: db.localDeletionRepository,
     nativeSyncApi: ref.watch(nativeSyncApiProvider),
     cancellation: ref.watch(cancellationProvider),
   );
