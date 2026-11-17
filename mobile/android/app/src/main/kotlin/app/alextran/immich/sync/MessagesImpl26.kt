@@ -12,10 +12,10 @@ class NativeSyncApiImpl26(context: Context) : NativeSyncApiImplBase(context), Na
     return true
   }
 
-  // No-op for Android 10 and below
   override fun checkpointSync() {
     // Cannot throw exception as this is called from the Dart side
     // during the full sync process as well
+    saveAlbumFolders()
   }
 
   override fun clearSyncCheckpoint() {

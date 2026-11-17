@@ -15,10 +15,8 @@ import kotlinx.serialization.json.Json
 @RequiresExtension(extension = Build.VERSION_CODES.R, version = 1)
 class NativeSyncApiImpl30(context: Context) : NativeSyncApiImplBase(context), NativeSyncApi {
   private val ctx: Context = context.applicationContext
-  private val prefs = ctx.getSharedPreferences(SHARED_PREF_NAME, Context.MODE_PRIVATE)
 
   companion object {
-    const val SHARED_PREF_NAME = "Immich::MediaManager"
     const val SHARED_PREF_MEDIA_STORE_VERSION_KEY = "MediaStore::getVersion"
     const val SHARED_PREF_MEDIA_STORE_GEN_KEY = "MediaStore::getGeneration"
   }
@@ -53,6 +51,7 @@ class NativeSyncApiImpl30(context: Context) : NativeSyncApiImplBase(context), Na
       putString(SHARED_PREF_MEDIA_STORE_GEN_KEY, Json.encodeToString(genMap))
       apply()
     }
+    saveAlbumFolders()
   }
 
   override fun getMediaChanges(callback: (Result<SyncDelta>) -> Unit) {
