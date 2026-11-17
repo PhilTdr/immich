@@ -27,6 +27,7 @@ import 'factories/user_factory.dart';
 class RepositoryMocks {
   final localAlbum = LocalAlbumRepositoryStub(MockLocalAlbumRepository());
   final localAsset = LocalAssetRepositoryStub(MockLocalAssetRepository());
+  final localDeletion = LocalDeletionRepositoryStub(MockLocalDeletionRepository());
   final remoteAsset = RemoteAssetRepositoryStub(MockRemoteAssetRepository());
   final remoteExif = RemoteExifRepositoryStub(MockRemoteExifRepository());
   final trashedAsset = MockTrashedLocalAssetRepository();
@@ -47,6 +48,7 @@ class RepositoryMocks {
     _registerFallbacks();
     localAlbum.reset();
     localAsset.reset();
+    localDeletion.reset();
     remoteAsset.reset();
     remoteExif.reset();
     reset(trashedAsset);
@@ -59,6 +61,7 @@ class RepositoryMocks {
     permission.reset();
     _stubLocalAlbumRepository();
     _stubLocalAssetRepository();
+    _stubLocalDeletionRepository();
     _stubRemoteAssetRepository();
     _stubRemoteExifRepository();
     _stubNativeSyncApi();
@@ -88,6 +91,17 @@ class RepositoryMocks {
     when(localAsset.reconcileHashesFromCloudId).thenAnswer((_) async => {});
     when(localAsset.updateHashes).thenAnswer((_) async => {});
     when(localAsset.deleteAssets).thenAnswer((_) async => {});
+  }
+
+  void _stubLocalDeletionRepository() {
+    when(localDeletion.markExcluded).thenAnswer((_) async {});
+    when(localDeletion.unmarkExcluded).thenAnswer((_) async {});
+    when(localDeletion.getToTrash).thenAnswer((_) async => []);
+    when(localDeletion.hasAwaitingConfirmation).thenAnswer((_) async => false);
+    when(localDeletion.getToRestore).thenAnswer((_) async => []);
+    when(localDeletion.deleteByRemoteIds).thenAnswer((_) async {});
+    when(localDeletion.markTrashed).thenAnswer((_) async {});
+    when(localDeletion.prune).thenAnswer((_) async {});
   }
 
   void _stubNativeSyncApi() {
@@ -266,6 +280,33 @@ extension type const LocalAssetRepositoryStub(MockLocalAssetRepository repo) imp
 
   Future<void> Function() get deleteAssets =>
       () => repo.deleteAssets(any());
+}
+
+extension type const LocalDeletionRepositoryStub(MockLocalDeletionRepository repo)
+    implements Stub<MockLocalDeletionRepository> {
+  Future<void> Function() get markExcluded =>
+      () => repo.markExcluded(any());
+
+  Future<void> Function() get unmarkExcluded =>
+      () => repo.unmarkExcluded(any());
+
+  Future<List<String>> Function() get getToTrash =>
+      () => repo.getToTrash(any(), settledBefore: any(named: 'settledBefore'));
+
+  Future<bool> Function() get hasAwaitingConfirmation =>
+      () => repo.hasAwaitingConfirmation(any());
+
+  Future<List<String>> Function() get getToRestore =>
+      () => repo.getToRestore(any());
+
+  Future<void> Function() get deleteByRemoteIds =>
+      () => repo.deleteByRemoteIds(any());
+
+  Future<void> Function() get markTrashed =>
+      () => repo.markTrashed(any());
+
+  Future<void> Function() get prune =>
+      () => repo.prune(any());
 }
 
 extension type const RemoteAssetRepositoryStub(MockRemoteAssetRepository repo)

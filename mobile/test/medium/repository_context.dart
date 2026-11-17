@@ -4,6 +4,7 @@ import 'package:immich_mobile/data/db/main/database.dart';
 import 'package:immich_mobile/data/db/main/table/local/album.drift.dart';
 import 'package:immich_mobile/data/db/main/table/local/album_asset.drift.dart';
 import 'package:immich_mobile/data/db/main/table/local/asset.drift.dart';
+import 'package:immich_mobile/data/db/main/table/local/deletion.drift.dart';
 import 'package:immich_mobile/data/db/main/table/local/trashed_asset.dart';
 import 'package:immich_mobile/data/db/main/table/local/trashed_asset.drift.dart';
 import 'package:immich_mobile/data/db/main/table/memory/asset.drift.dart';
@@ -150,7 +151,7 @@ class MediumRepositoryContext {
             localDateTime: .new(date),
             groupDate: .new(timelineGroupDate(date)),
             thumbHash: .new(TestUtils.uuid(thumbHash)),
-            libraryId: .new(TestUtils.uuid(libraryId)),
+            libraryId: .new(libraryId),
           ),
         );
   }
@@ -369,6 +370,28 @@ class MediumRepositoryContext {
   Future<void> newLocalAlbumAsset({required String albumId, required String assetId}) => db
       .into(db.localAlbumAssetEntity)
       .insert(LocalAlbumAssetEntityCompanion(albumId: .new(albumId), assetId: .new(assetId)));
+
+  Future<LocalDeletionEntityData> newLocalDeletion({
+    required String remoteId,
+    required String ownerId,
+    String? checksum,
+    DateTime? createdAt,
+    DateTime? trashedAt,
+    bool? awaitingConfirmation,
+  }) {
+    return db
+        .into(db.localDeletionEntity)
+        .insertReturning(
+          LocalDeletionEntityCompanion(
+            remoteId: .new(remoteId),
+            ownerId: .new(ownerId),
+            checksum: .new(TestUtils.uuid(checksum)),
+            createdAt: .new(TestUtils.date(createdAt)),
+            trashedAt: .new(trashedAt),
+            awaitingConfirmation: .new(awaitingConfirmation ?? false),
+          ),
+        );
+  }
 
   Future<MemoryEntityData> newMemory({
     String? id,

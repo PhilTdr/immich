@@ -43,6 +43,8 @@ enum SettingsKey<T> {
   backupRequireCharging<bool>(),
   backupTriggerDelay<int>(),
   backupSyncAlbums<bool>(),
+  backupSyncLocalDeletions<bool>(),
+  backupSyncLocalDeletionsInIosSharedAlbums<bool>(),
 
   // Timeline
   timelineTilesPerRow<int>(),

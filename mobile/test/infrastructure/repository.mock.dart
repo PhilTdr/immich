@@ -1,5 +1,6 @@
 // ignore_for_file: unused-code
 
+import 'package:immich_mobile/data/db/main/dao/local_deletion.dart';
 import 'package:immich_mobile/data/db/main/database.dart';
 import 'package:immich_mobile/infrastructure/repositories/backup.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/local_album.repository.dart';
@@ -39,6 +40,8 @@ class MockLocalAlbumRepository extends Mock implements LocalAlbumRepository {}
 class MockRemoteAlbumRepository extends Mock implements RemoteAlbumRepository {}
 
 class MockLocalAssetRepository extends Mock implements LocalAssetRepository {}
+
+class MockLocalDeletionRepository extends Mock implements LocalDeletionRepository {}
 
 class MockRemoteAssetRepository extends Mock implements RemoteAssetRepository {}
 

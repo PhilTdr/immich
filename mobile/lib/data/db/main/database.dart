@@ -6,6 +6,7 @@ import 'package:drift/drift.dart';
 import 'package:drift/src/runtime/executor/stream_queries.dart' show StreamQueryStore;
 import 'package:drift_sqlite_async/drift_sqlite_async.dart';
 import 'package:flutter/foundation.dart';
+import 'package:immich_mobile/data/db/main/dao/local_deletion.dart';
 import 'package:immich_mobile/data/db/main/dao/ocr.dart';
 import 'package:immich_mobile/data/db/main/dao/person.dart';
 import 'package:immich_mobile/data/db/main/dao/user_metadata.dart';
@@ -19,6 +20,8 @@ import 'package:immich_mobile/data/db/main/table/local/album.dart';
 import 'package:immich_mobile/data/db/main/table/local/album_asset.dart';
 import 'package:immich_mobile/data/db/main/table/local/asset.dart';
 import 'package:immich_mobile/data/db/main/table/local/asset.drift.dart';
+import 'package:immich_mobile/data/db/main/table/local/deletion.dart';
+import 'package:immich_mobile/data/db/main/table/local/deletion_exclusion.dart';
 import 'package:immich_mobile/data/db/main/table/local/trashed_asset.dart';
 import 'package:immich_mobile/data/db/main/table/local/trashed_asset.drift.dart';
 import 'package:immich_mobile/data/db/main/table/memory/asset.dart';
@@ -85,6 +88,8 @@ import 'package:sqlite_async/sqlite_async.dart';
     AssetEditEntity,
     SettingsEntity,
     AssetOcrEntity,
+    LocalDeletionEntity,
+    LocalDeletionExclusionEntity,
   ],
   include: {'package:immich_mobile/data/db/main/query/merged_asset.drift'},
   daos: [
@@ -92,6 +97,7 @@ import 'package:sqlite_async/sqlite_async.dart';
     BackupRepository,
     LocalAlbumRepository,
     LocalAssetRepository,
+    LocalDeletionRepository,
     MapRepository,
     MemoryRepository,
     OcrRepository,
@@ -160,7 +166,7 @@ class Drift extends $Drift {
   }
 
   @override
-  int get schemaVersion => 35;
+  int get schemaVersion => 36;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -379,6 +385,10 @@ class Drift extends $Drift {
                 await m.addColumn(v35.localAssetEntity, v35.localAssetEntity.groupDate);
                 await m.createIndex(v35.idxRemoteAssetGroup);
                 await m.createIndex(v35.idxLocalAssetGroup);
+              },
+              from35To36: (m, v36) async {
+                await m.createTable(v36.localDeletionEntity);
+                await m.createTable(v36.localDeletionExclusionEntity);
               },
             ),
           );
