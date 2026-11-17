@@ -54,6 +54,21 @@ When enabled, Immich automatically creates albums on the server that mirror the 
 
 This is a one-way sync from your device to the server. You can enable this feature at any time and use the **Reorganize into album** button to backfill existing uploads into their corresponding albums.
 
+### Sync deleted photos and videos
+
+With **Deleted on device** enabled in the backup options, photos and videos that are deleted or moved out of the albums selected for backup outside of Immich, like in the gallery or a file manager, are moved to the server trash as well. The option is off by default, needs full access to the photo library and only covers deletions made while it is on.
+
+- A deletion is listed under **Deletions** on the backup page and sent by the first sync that runs 15 minutes later. 50 or more at once wait there until you confirm them.
+- Restoring a photo on the same device, or moving it back into an album selected for backup, restores its server copy while that is still in the trash.
+- Moving a photo between albums selected for backup is not a deletion. Moving it anywhere else is, for example into a new folder, onto the SD card or into a folder with a `.nomedia` file. So are renaming a backed-up folder on Android and a cleanup by another app.
+- Photos and videos removed by Immich itself, like with [Free Up Space](/features/mobile-app#free-up-space), stay on the server.
+- The server copy is trashed even if another device still has the photo.
+- On iOS, deletions in iCloud Shared Albums are only synced with **Deleted in iCloud Shared Albums** on, since photos there also disappear when another member removes them.
+
+:::warning Hidden photos on iOS
+Apps can't see hidden photos while the Hidden album is locked, which is the default. A backed-up photo that you hide therefore counts as deleted. Restore it from the server trash to keep it.
+:::
+
 ## Platform Specific Features
 
 ### Android
