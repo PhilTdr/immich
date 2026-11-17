@@ -11,6 +11,8 @@ import 'package:immich_mobile/extensions/platform_extensions.dart';
 import 'package:immich_mobile/generated/translations.g.dart';
 import 'package:immich_mobile/providers/background_sync.provider.dart';
 import 'package:immich_mobile/providers/backup/backup_album.provider.dart';
+import 'package:immich_mobile/providers/gallery_permission.provider.dart';
+import 'package:immich_mobile/providers/infrastructure/db.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/platform.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/settings.provider.dart';
 import 'package:immich_mobile/providers/user.provider.dart';
@@ -35,6 +37,9 @@ class BackupSettings extends StatelessWidget {
         const Divider(),
         SettingGroupTitle(title: context.t.backup_albums_sync, icon: Icons.sync),
         const _AlbumSyncActionButton(),
+        const Divider(),
+        SettingGroupTitle(title: context.t.sync_deletions, icon: Icons.auto_delete_outlined),
+        const _SyncLocalDeletionsButton(),
       ],
     );
   }
@@ -151,14 +156,18 @@ class _BackupSwitchTile extends ConsumerWidget {
   final bool Function(AppConfig) selector;
   final String title;
   final String subtitle;
+  final bool enabled;
   final void Function(bool)? onChanged;
+  final EdgeInsetsGeometry? contentPadding;
 
   const _BackupSwitchTile({
     required this.metadataKey,
     required this.selector,
     required this.title,
     required this.subtitle,
+    this.enabled = true,
     this.onChanged,
+    this.contentPadding,
   });
 
   @override
@@ -169,12 +178,15 @@ class _BackupSwitchTile extends ConsumerWidget {
       child: SettingListTile(
         title: title,
         subtitle: subtitle,
+        contentPadding: contentPadding,
         trailing: Switch(
           value: value,
-          onChanged: (bool newValue) async {
-            await ref.read(settingsProvider).write(metadataKey, newValue);
-            onChanged?.call(newValue);
-          },
+          onChanged: !enabled
+              ? null
+              : (bool newValue) async {
+                  await ref.read(settingsProvider).write(metadataKey, newValue);
+                  onChanged?.call(newValue);
+                },
         ),
       ),
     );
@@ -282,6 +294,59 @@ class _BackupDelaySlider extends ConsumerWidget {
           divisions: 3,
           label: formatBackupDelaySliderValue(context, currentValue),
         ),
+      ],
+    );
+  }
+}
+
+class _SyncLocalDeletionsButton extends ConsumerWidget {
+  const _SyncLocalDeletionsButton();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final deletionRepository = ref.watch(driftProvider).localDeletionRepository;
+    final hasFullAccess = ref.watch(galleryPermissionNotifier) == .granted;
+    final isEnabled = ref.watch(appConfigProvider.select((c) => c.backup.syncLocalDeletions));
+    return Column(
+      children: [
+        _BackupSwitchTile(
+          metadataKey: SettingsKey.backupSyncLocalDeletions,
+          selector: (c) => c.backup.syncLocalDeletions,
+          title: context.t.sync_local_deletions,
+          subtitle: hasFullAccess
+              ? context.t.sync_local_deletions_description
+              : context.t.sync_local_deletions_description_without_permission,
+          enabled: hasFullAccess || isEnabled,
+          onChanged: (enabled) {
+            if (!enabled) {
+              unawaited(deletionRepository.clearQueue());
+            }
+          },
+        ),
+        if (CurrentPlatform.isIOS)
+          AnimatedSize(
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeInOut,
+            child: AnimatedOpacity(
+              duration: const Duration(milliseconds: 200),
+              opacity: isEnabled ? 1.0 : 0.0,
+              child: isEnabled
+                  ? _BackupSwitchTile(
+                      metadataKey: SettingsKey.backupSyncLocalDeletionsInIosSharedAlbums,
+                      selector: (c) => c.backup.syncLocalDeletionsInIosSharedAlbums,
+                      title: context.t.sync_local_deletions_in_ios_shared_albums,
+                      subtitle: context.t.sync_local_deletions_in_ios_shared_albums_description,
+                      contentPadding: const EdgeInsets.only(left: 32, right: 24),
+                      // The queue does not track which deletions came from shared albums
+                      onChanged: (enabled) {
+                        if (!enabled) {
+                          unawaited(deletionRepository.clearPending());
+                        }
+                      },
+                    )
+                  : const SizedBox.shrink(),
+            ),
+          ),
       ],
     );
   }

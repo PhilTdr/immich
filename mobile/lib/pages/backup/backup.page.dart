@@ -132,10 +132,9 @@ class _BackupPageState extends ConsumerState<BackupPage> {
               children: [
                 const SizedBox(height: 8),
                 const _BackupAlbumSelectionCard(),
+                if (selectedAlbum.isNotEmpty) ...[const _TotalCard(), const _BackupCard(), const _RemainderCard()],
+                const _PendingDeletionsCard(),
                 if (selectedAlbum.isNotEmpty) ...[
-                  const _TotalCard(),
-                  const _BackupCard(),
-                  const _RemainderCard(),
                   const Divider(),
                   BackupToggleButton(
                     onStart: () async => await startBackup(),
@@ -531,6 +530,34 @@ class _RemainderCard extends ConsumerWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _PendingDeletionsCard extends ConsumerWidget {
+  const _PendingDeletionsCard();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final isEnabled = ref.watch(appConfigProvider.select((config) => config.backup.syncLocalDeletions));
+    if (!isEnabled) {
+      return const SizedBox.shrink();
+    }
+
+    final (pendingCount, awaitingCount) = ref.watch(
+      pendingDeletionsProvider.select((p) {
+        final pending = p.valueOrNull ?? const [];
+        return (pending.length, pending.where((d) => d.awaitingConfirmation).length);
+      }),
+    );
+
+    return BackupInfoCard(
+      title: context.t.backup_controller_page_deletions,
+      subtitle: awaitingCount > 0
+          ? context.t.backup_controller_page_deletions_awaiting_sub(count: awaitingCount)
+          : context.t.backup_controller_page_deletions_sub,
+      info: pendingCount.toString(),
+      onTap: () => context.pushRoute(const BackupPendingDeletionRoute()),
     );
   }
 }
