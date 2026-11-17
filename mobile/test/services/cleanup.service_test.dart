@@ -1,5 +1,10 @@
+import 'package:drift/drift.dart' as drift;
+import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:immich_mobile/data/db/main/database.dart';
+import 'package:immich_mobile/domain/models/settings_key.dart';
 import 'package:immich_mobile/extensions/platform_extensions.dart';
+import 'package:immich_mobile/infrastructure/repositories/settings.repository.dart';
 import 'package:immich_mobile/services/cleanup.service.dart';
 import 'package:mocktail/mocktail.dart';
 
@@ -11,11 +16,27 @@ void main() {
 
   late MockLocalAssetRepository localAssetRepository;
   late MockAssetMediaRepository assetMediaRepository;
+  late MockLocalDeletionRepository localDeletionRepository;
+  late Drift db;
 
-  setUp(() {
+  setUpAll(() async {
+    db = Drift(drift.DatabaseConnection(NativeDatabase.memory(), closeStreamsSynchronously: true));
+    await SettingsRepository.ensureInitialized(db);
+  });
+
+  tearDownAll(() async {
+    await db.close();
+  });
+
+  setUp(() async {
     localAssetRepository = MockLocalAssetRepository();
     assetMediaRepository = MockAssetMediaRepository();
-    sut = CleanupService(localAssetRepository, assetMediaRepository);
+    localDeletionRepository = MockLocalDeletionRepository();
+    sut = CleanupService(localAssetRepository, assetMediaRepository, localDeletionRepository);
+
+    await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletions, false);
+    when(() => localDeletionRepository.markExcluded(any())).thenAnswer((_) async {});
+    when(() => localDeletionRepository.unmarkExcluded(any())).thenAnswer((_) async {});
   });
 
   group('CleanupService.deleteLocalAssets', () {
@@ -68,6 +89,36 @@ void main() {
       expect(capturedBatches[2].first, 'asset-${batchSize * 2}');
       expect(capturedBatches[2].last, 'asset-${batchSize * 2 + 500}');
       verify(() => localAssetRepository.deleteAssets(any())).called(3);
+    });
+
+    test('excludes a batch from the deletion sync before deleting it', () async {
+      await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletions, true);
+
+      when(() => assetMediaRepository.deleteAll(any())).thenAnswer((invocation) async {
+        return (invocation.positionalArguments.first as List<String>).toList();
+      });
+      when(() => localAssetRepository.deleteAssets(any())).thenAnswer((_) async {});
+
+      await sut.deleteLocalAssets(['asset-1', 'asset-2']);
+
+      verifyInOrder([
+        () => localDeletionRepository.markExcluded(['asset-1', 'asset-2']),
+        () => assetMediaRepository.deleteAll(['asset-1', 'asset-2']),
+      ]);
+      verifyNever(() => localDeletionRepository.unmarkExcluded(any()));
+    });
+
+    test('drops the exclusion of assets that were not deleted', () async {
+      await SettingsRepository.instance.write(SettingsKey.backupSyncLocalDeletions, true);
+
+      when(() => assetMediaRepository.deleteAll(any())).thenAnswer((_) async => ['asset-1']);
+      when(() => localAssetRepository.deleteAssets(any())).thenAnswer((_) async {});
+
+      await sut.deleteLocalAssets(['asset-1', 'asset-2']);
+
+      final unmarked =
+          verify(() => localDeletionRepository.unmarkExcluded(captureAny())).captured.single as Iterable<String>;
+      expect(unmarked, ['asset-2']);
     });
   });
 }
