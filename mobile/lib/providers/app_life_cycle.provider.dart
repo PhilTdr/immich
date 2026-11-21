@@ -94,11 +94,12 @@ class AppLifeCycleNotifier extends StateNotifier<AppLifeCycleEnum> {
       return;
     }
     _ref.read(websocketProvider.notifier).connect();
+
+    await _ref.read(galleryPermissionNotifier.notifier).getGalleryPermissionStatus();
+
     await _handleBetaTimelineResume();
 
     await _ref.read(notificationPermissionProvider.notifier).getNotificationPermission();
-
-    await _ref.read(galleryPermissionNotifier.notifier).getGalleryPermissionStatus();
   }
 
   Future<void> _safeRun(Future<void> Function() action, String debugName) async {
