@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:immich_mobile/data/db/main/database.dart';
+import 'package:immich_mobile/domain/models/album/local_album.model.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/domain/models/store.model.dart';
 import 'package:immich_mobile/domain/services/local_sync.service.dart';
@@ -234,6 +235,32 @@ void main() {
 
       verifyNever(() => mockAssetMediaRepository.deleteAll(any()));
       verifyNever(() => mockTrashedLocalAssetRepository.trashLocalAsset(any()));
+    });
+  });
+
+  group('LocalSyncService - checkAddition', () {
+    test('leaves the fast path when a known asset counts as new', () async {
+      final dbAlbum = LocalAlbum(id: 'camera', name: 'Camera', updatedAt: DateTime.utc(2024), assetCount: 1);
+      final knownAsset = PlatformAsset(
+        id: 'known',
+        name: 'known.jpg',
+        type: AssetType.image.index,
+        durationMs: 0,
+        orientation: 0,
+        isFavorite: false,
+        playbackStyle: PlatformAssetPlaybackStyle.image,
+      );
+      registerFallbackValue(dbAlbum);
+      when(() => mockLocalAlbumRepository.upsert(any(), toUpsert: any(named: 'toUpsert'))).thenAnswer((_) async {});
+      when(() => mockLocalAlbumRepository.getAssetIds('camera')).thenAnswer((_) async => ['known']);
+      when(() => mockNativeSyncApi.getAssetsCountSince('camera', any())).thenAnswer((_) async => 1);
+      when(
+        () => mockNativeSyncApi.getAssetsForAlbum('camera', updatedTimeCond: any(named: 'updatedTimeCond')),
+      ).thenAnswer((_) async => [knownAsset]);
+
+      final isSynced = await sut.checkAddition(dbAlbum, dbAlbum.copyWith(assetCount: 2));
+
+      expect(isSynced, isFalse);
     });
   });
 

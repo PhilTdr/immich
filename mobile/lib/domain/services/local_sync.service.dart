@@ -251,6 +251,13 @@ class LocalSyncService {
           .getAssetsForAlbum(deviceAlbum.id, updatedTimeCond: updatedTime)
           .then((a) => a.toLocalAssets());
 
+      // A known asset that counts as new hides one that moved into the album
+      final knownIds = (await _localAlbumRepository.getAssetIds(dbAlbum.id)).toSet();
+      if (newAssets.where((asset) => !knownIds.contains(asset.id)).length != newAssetsCount) {
+        _log.fine("Local album has unseen assets. Proceeding to full sync");
+        return false;
+      }
+
       await _localAlbumRepository.upsert(
         deviceAlbum.copyWith(backupSelection: dbAlbum.backupSelection),
         toUpsert: newAssets,
